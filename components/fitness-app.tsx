@@ -26,6 +26,8 @@ import {
   loadExercises,
   saveExercises,
   newExerciseId,
+  loadStarterLevel,
+  saveStarterLevel,
   type StoredExercise,
 } from "@/lib/fitness-storage"
 import {
@@ -40,6 +42,7 @@ import { findLastExerciseSession, compareSetToPrevious } from "@/lib/exercise-me
 
 type Screen =
   | "home"
+  | "chooseFirstExercise"
   | "settings"
   | "workout"
   | "workoutSummary"
@@ -256,6 +259,18 @@ function starterExercises(level: StarterLevel, newId: () => string): StoredExerc
   return presets[level].map((e) => ({ id: newId(), name: e.name, category: e.category, weights: e.weights }))
 }
 
+function ensureStarterExercises(
+  existing: StoredExercise[],
+  level: StarterLevel,
+  newId: () => string,
+): StoredExercise[] {
+  const want = starterExercises(level, newId)
+  const haveNames = new Set(existing.map((e) => e.name.trim().toLowerCase()))
+  const missing = want.filter((e) => !haveNames.has(e.name.trim().toLowerCase()))
+  if (!missing.length) return existing
+  return [...existing, ...missing]
+}
+
 function WorkoutPauseOverlay({
   onResume,
   onFinish,
@@ -360,6 +375,14 @@ export function FitnessApp() {
     setExercises(loadExercises())
     setExercisesReady(true)
   }, [])
+
+  // If the user previously chose a starter level, ensure missing starter exercises are present.
+  useEffect(() => {
+    if (!exercisesReady) return
+    const level = loadStarterLevel()
+    if (!level) return
+    setExercises((prev) => ensureStarterExercises(prev, level, newExerciseId))
+  }, [exercisesReady])
 
   useEffect(() => {
     if (!exercisesReady) return
@@ -527,16 +550,15 @@ export function FitnessApp() {
 
   const startWorkout = () => {
     if (exercises.length === 0) return
-    const first = exercises[0]
     const start = new Date()
     resetWorkoutSession()
     setSessionId(`sess-${start.getTime()}-${Math.random().toString(36).slice(2, 7)}`)
     setSessionStartedAt(start.toISOString())
-    setCurrentExerciseId(first.id)
-    setSessionExerciseIds([first.id])
+    setCurrentExerciseId(null)
+    setSessionExerciseIds([])
     setShowExercisePicker(false)
     setIsPaused(false)
-    setScreen("workout")
+    setScreen("chooseFirstExercise")
   }
 
   /** Settings only: does not clear an in-progress workout (none reachable from here today) */
@@ -838,6 +860,7 @@ export function FitnessApp() {
                 onClick={() => {
                   // Guard: never overwrite existing exercises
                   if (exercises.length > 0) return
+                  saveStarterLevel(opt.id)
                   setExercises(starterExercises(opt.id, newExerciseId))
                 }}
               >
@@ -894,6 +917,80 @@ export function FitnessApp() {
         >
           Workout History
         </Button>
+      </div>
+    )
+  }
+
+  // —— Choose first exercise (before workout starts)
+  if (screen === "chooseFirstExercise") {
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              // Cancel starting a workout
+              resetWorkoutSession()
+              setScreen("home")
+            }}
+            aria-label="Back to home"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Choose first exercise</h1>
+        </header>
+
+        <div className="mx-auto w-full max-w-md">
+          <div className="no-scrollbar mb-3 flex gap-1 overflow-x-auto">
+            {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+              <Button
+                key={t}
+                type="button"
+                variant={workoutTab === t ? "default" : "secondary"}
+                size="sm"
+                className={cn("h-9 rounded-full px-3 text-xs", workoutTab === t && "bg-primary text-primary-foreground")}
+                onClick={() => setWorkoutTab(t)}
+              >
+                {t}
+              </Button>
+            ))}
+          </div>
+
+          <div className="space-y-4">
+            {groupExercisesForUI(exercises)
+              .filter((g) => {
+                if (workoutTab === "All") return true
+                return g.label === workoutTab
+              })
+              .map((group) => (
+                <section key={group.label}>
+                  {workoutTab === "All" ? (
+                    <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.label === "Unassigned" ? "Unassigned" : group.label}
+                    </p>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-2">
+                    {group.items.map((ex) => (
+                      <Button
+                        key={ex.id}
+                        type="button"
+                        variant="secondary"
+                        className="h-12 justify-start rounded-xl px-4 text-left font-semibold"
+                        onClick={() => {
+                          activateExercise(ex.id)
+                          setScreen("workout")
+                        }}
+                      >
+                        {ex.name}
+                      </Button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+          </div>
+        </div>
       </div>
     )
   }

@@ -1,4 +1,5 @@
 const EXERCISES_KEY = "fitlog-exercises-v1"
+const STARTER_LEVEL_KEY = "fitlog-starter-level-v1"
 
 export type StoredExercise = {
   id: string
@@ -76,6 +77,26 @@ export function saveExercises(exercises: StoredExercise[]) {
     localStorage.setItem(EXERCISES_KEY, JSON.stringify(exercises))
   } catch {
     // ignore quota / private mode
+  }
+}
+
+export function loadStarterLevel(): "newbie" | "intermediate" | "charles" | null {
+  if (typeof window === "undefined") return null
+  try {
+    const v = localStorage.getItem(STARTER_LEVEL_KEY)
+    if (v === "newbie" || v === "intermediate" || v === "charles") return v
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function saveStarterLevel(level: "newbie" | "intermediate" | "charles") {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(STARTER_LEVEL_KEY, level)
+  } catch {
+    // ignore
   }
 }
 
