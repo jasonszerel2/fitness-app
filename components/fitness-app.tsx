@@ -31,6 +31,8 @@ type Screen =
   | "workoutHistory"
   | "workoutHistoryDetail"
 
+type StarterLevel = "newbie" | "intermediate" | "charles"
+
 /** One row in the current session’s log (in-memory, local to this app session) */
 type SessionSetLog = {
   id: string
@@ -133,6 +135,33 @@ function savedWorkoutTotalSets(w: SavedWorkout): number {
 function savedWorkoutExerciseCount(w: SavedWorkout): number {
   if (w.exercisesPerformed?.length) return w.exercisesPerformed.length
   return w.byExercise.length
+}
+
+function starterExercises(level: StarterLevel, newId: () => string): StoredExercise[] {
+  const presets: Record<StarterLevel, Array<{ name: string; weights: [number, number, number] }>> = {
+    newbie: [
+      { name: "Bench Press", weights: [20, 30, 40] },
+      { name: "Squat", weights: [30, 40, 50] },
+      { name: "Deadlift", weights: [40, 50, 60] },
+      { name: "Bicep Curl", weights: [6, 8, 10] },
+      { name: "Shoulder Press", weights: [10, 15, 20] },
+    ],
+    intermediate: [
+      { name: "Bench Press", weights: [40, 60, 80] },
+      { name: "Squat", weights: [60, 80, 100] },
+      { name: "Deadlift", weights: [80, 100, 120] },
+      { name: "Bicep Curl", weights: [8, 10, 14] },
+      { name: "Shoulder Press", weights: [20, 25, 30] },
+    ],
+    charles: [
+      { name: "Bench Press", weights: [80, 100, 120] },
+      { name: "Squat", weights: [100, 120, 140] },
+      { name: "Deadlift", weights: [120, 140, 160] },
+      { name: "Bicep Curl", weights: [14, 18, 22] },
+      { name: "Shoulder Press", weights: [30, 40, 50] },
+    ],
+  }
+  return presets[level].map((e) => ({ id: newId(), name: e.name, weights: e.weights }))
 }
 
 function WorkoutPauseOverlay({
@@ -625,6 +654,56 @@ export function FitnessApp() {
     setIsPaused(false)
     setScreen("workoutSummary")
   }, [sessionLogs, sessionId, sessionStartedAt, resetWorkoutSession, showLogForm])
+
+  // —— First-time setup (only when there are no saved exercises)
+  if (screen === "home" && exercisesReady && exercises.length === 0) {
+    return (
+      <div className="relative flex min-h-screen flex-col items-center justify-center bg-background p-6">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            setScreen("settings")
+            resetDraft()
+          }}
+          className="absolute right-4 top-4 text-muted-foreground hover:text-foreground"
+          aria-label="Open settings"
+        >
+          <Settings className="size-5" />
+        </Button>
+
+        <div className="w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-sm">
+          <h1 className="text-xl font-semibold text-foreground">Choose your starter level</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Adds a few common exercises with preset weights.</p>
+          <div className="mt-4 grid gap-2">
+            {([
+              { id: "newbie", label: "Newbie" },
+              { id: "intermediate", label: "Intermediate" },
+              { id: "charles", label: "Charles" },
+            ] as const).map((opt) => (
+              <Button
+                key={opt.id}
+                type="button"
+                size="lg"
+                className="h-14 rounded-2xl text-base font-semibold"
+                onClick={() => {
+                  // Guard: never overwrite existing exercises
+                  if (exercises.length > 0) return
+                  setExercises(starterExercises(opt.id, newExerciseId))
+                }}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            You can edit or delete exercises later in Settings.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   // —— Home
   if (screen === "home") {
