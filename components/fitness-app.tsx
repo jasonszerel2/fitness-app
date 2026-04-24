@@ -454,6 +454,16 @@ export function FitnessApp() {
     [exercises, currentExerciseId],
   )
 
+  const currentExerciseSessionSets = useMemo(() => {
+    if (!currentExercise) return []
+    return sessionLogs.filter((l) => l.exerciseName === currentExercise.name)
+  }, [sessionLogs, currentExercise])
+
+  const currentExerciseLastSet = useMemo(() => {
+    if (!currentExerciseSessionSets.length) return null
+    return currentExerciseSessionSets[currentExerciseSessionSets.length - 1]
+  }, [currentExerciseSessionSets])
+
   const lastSessionForCurrentExercise = useMemo(() => {
     if (!currentExercise) return null
     return findLastExerciseSession(savedWorkoutsList, currentExercise.name)
@@ -1710,6 +1720,9 @@ export function FitnessApp() {
       {isSetActive && !isPaused && !showLogForm ? (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black px-5">
           <p className="mb-6 text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
+          <p className="mb-6 text-center text-lg font-semibold text-white/90">
+            {currentExercise?.name ?? "Exercise"}
+          </p>
           <p className="text-center font-mono text-7xl font-bold tabular-nums text-white sm:text-8xl">
             {formatTime(setTime)}
           </p>
@@ -1757,6 +1770,31 @@ export function FitnessApp() {
       </div>
 
       {/* (Switching UI moved into bottom sheet) */}
+
+      {/* Current exercise header (always visible) */}
+      <div className="border-b border-border px-4 py-3">
+        <div className="mx-auto w-full max-w-md">
+          <p className="text-center text-2xl font-semibold text-foreground">{currentExercise?.name}</p>
+          <p className="mt-1 text-center text-sm text-muted-foreground">
+            {currentExerciseLastSet
+              ? `Last set: ${currentExerciseLastSet.weight} kg × ${currentExerciseLastSet.reps}`
+              : "No sets logged yet"}
+          </p>
+
+          {currentExerciseSessionSets.length ? (
+            <ul className="mt-3 space-y-1.5 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
+              {currentExerciseSessionSets.map((s, i) => (
+                <li key={s.id} className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Set {i + 1}</span>
+                  <span className="font-medium text-foreground">
+                    {s.weight} kg × {s.reps}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
 
       {showSwitchSheet && (
         <div className="absolute inset-0 z-30 flex flex-col justify-end bg-black/30 p-0">
