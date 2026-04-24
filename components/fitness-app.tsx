@@ -1,0 +1,1596 @@
+"use client"
+
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
+import { Play, Square, Check, Settings, ArrowLeft, Trash2, Pause, Pencil } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { cn } from "@/lib/utils"
+import { useTheme } from "next-themes"
+import {
+  loadExercises,
+  saveExercises,
+  newExerciseId,
+  type StoredExercise,
+} from "@/lib/fitness-storage"
+import {
+  appendSavedWorkout,
+  deleteSavedWorkout,
+  loadSavedWorkouts,
+  newSavedWorkoutId,
+  type SavedWorkout,
+  updateSavedWorkoutName,
+} from "@/lib/saved-workouts-storage"
+import { findLastExerciseSession, compareSetToPrevious } from "@/lib/exercise-memory"
+
+type Screen =
+  | "home"
+  | "settings"
+  | "workout"
+  | "workoutSummary"
+  | "workoutHistory"
+  | "workoutHistoryDetail"
+
+/** One row in the current session’s log (in-memory, local to this app session) */
+type SessionSetLog = {
+  id: string
+  sessionId: string
+  sessionStartedAt: string
+  exerciseId: string
+  exerciseName: string
+  weight: number
+  reps: number
+  setEndedAt: string
+  setDurationSec: number
+  /** Filled when the user presses Start for the *next* set; until then `null` */
+  restBeforeNextSetSec: number | null
+}
+
+type PendingAfterStop = {
+  exerciseId: string
+  exerciseName: string
+  setEndedAt: Date
+  setDurationSec: number
+}
+
+/**
+ * Priority for “previous” reps when opening the log form (weight-specific):
+ * 1) Last set in the current session for this exercise at this exact weight
+ * 2) Most recent saved workout set for this exercise at this exact weight
+ * 3) Fallback to 8 reps
+ */
+function getSuggestedRepsForWeight(
+  exerciseName: string,
+  weight: number,
+  sessionLogs: SessionSetLog[],
+  savedWorkouts: SavedWorkout[],
+): number {
+  const clamp = (n: number) => Math.min(99, Math.max(1, Math.round(n)))
+  const near = (x: number, y: number) => Math.abs(x - y) < 1e-6
+
+  // 1) current session: last logged set with same weight
+  for (let i = sessionLogs.length - 1; i >= 0; i--) {
+    const l = sessionLogs[i]
+    if (l.exerciseName === exerciseName && near(l.weight, weight) && l.reps > 0) {
+      return clamp(l.reps)
+    }
+  }
+
+  // 2) history: scan most recent workouts first, pick the most recent set with same weight
+  const sorted = [...savedWorkouts].sort(
+    (a, b) => new Date(b.sessionEndedAt).getTime() - new Date(a.sessionEndedAt).getTime(),
+  )
+  for (const w of sorted) {
+    const group = w.byExercise.find((g) => g.exerciseName === exerciseName)
+    if (!group?.sets?.length) continue
+    for (let i = group.sets.length - 1; i >= 0; i--) {
+      const s = group.sets[i]
+      if (near(s.weight, weight) && Number.isFinite(s.reps) && s.reps > 0) return clamp(s.reps)
+    }
+  }
+  return 8
+}
+
+function formatSessionDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+  } catch {
+    return iso
+  }
+}
+
+function formatClock(iso: string) {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+  } catch {
+    return iso
+  }
+}
+
+/** e.g. Apr 21 (for “last time” labels) */
+function formatShortSessionDay(iso: string) {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+  } catch {
+    return iso
+  }
+}
+
+function savedWorkoutTotalSets(w: SavedWorkout): number {
+  return w.byExercise.reduce((acc, g) => acc + g.sets.length, 0)
+}
+
+function savedWorkoutExerciseCount(w: SavedWorkout): number {
+  if (w.exercisesPerformed?.length) return w.exercisesPerformed.length
+  return w.byExercise.length
+}
+
+function WorkoutPauseOverlay({
+  onResume,
+  onFinish,
+  onCancel,
+}: {
+  onResume: () => void
+  onFinish: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/90 p-4">
+      <div className="w-full max-w-sm space-y-3 rounded-2xl border border-border bg-card p-5 shadow-lg">
+        <h2 className="text-center text-lg font-semibold">Paused</h2>
+        <p className="text-center text-sm text-muted-foreground">All timers are stopped</p>
+        <Button type="button" className="w-full" size="lg" onClick={onResume}>
+          Resume Workout
+        </Button>
+        <Button type="button" className="w-full" size="lg" onClick={onFinish}>
+          Finish &amp; Save Workout
+        </Button>
+        <Button type="button" className="w-full" size="lg" variant="outline" onClick={onCancel}>
+          Cancel Workout
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export function FitnessApp() {
+  const { theme, setTheme } = useTheme()
+  const [screen, setScreen] = useState<Screen>("home")
+  const [exercises, setExercises] = useState<StoredExercise[]>([])
+
+  const [sessionId, setSessionId] = useState("")
+  const [sessionStartedAt, setSessionStartedAt] = useState("")
+
+  const [currentExerciseId, setCurrentExerciseId] = useState<string | null>(null)
+  const [isSetActive, setIsSetActive] = useState(false)
+  const [restTime, setRestTime] = useState(0)
+  const [setTime, setSetTime] = useState(0)
+  const setTimeRef = useRef(0)
+  const restTimeRef = useRef(0)
+
+  const [showLogForm, setShowLogForm] = useState(false)
+  const [pendingAfterStop, setPendingAfterStop] = useState<PendingAfterStop | null>(null)
+  const [selectedWeight, setSelectedWeight] = useState<number | null>(null)
+  const [customWeight, setCustomWeight] = useState("")
+  const [reps, setReps] = useState("")
+  const [showCustomReps, setShowCustomReps] = useState(false)
+
+  const [sessionLogs, setSessionLogs] = useState<SessionSetLog[]>([])
+
+  const [isResting, setIsResting] = useState(false)
+  const [isPaused, setIsPaused] = useState(false)
+  const [summaryWorkout, setSummaryWorkout] = useState<SavedWorkout | null>(null)
+
+  const [draftName, setDraftName] = useState("")
+  const [draftW1, setDraftW1] = useState("")
+  const [draftW2, setDraftW2] = useState("")
+  const [draftW3, setDraftW3] = useState("")
+
+  const [exercisesReady, setExercisesReady] = useState(false)
+
+  const [savedWorkoutsList, setSavedWorkoutsList] = useState<SavedWorkout[]>([])
+  const [historyDetailWorkout, setHistoryDetailWorkout] = useState<SavedWorkout | null>(null)
+  const [historyEditingId, setHistoryEditingId] = useState<string | null>(null)
+  const [historyDraftName, setHistoryDraftName] = useState("")
+  const [postSaveComparison, setPostSaveComparison] = useState<
+    | null
+    | {
+        text: string
+        tone: "up" | "down" | "same" | "new"
+        isPersonalBest: boolean
+      }
+  >(null)
+  const postSaveComparisonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const repsInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setTimeRef.current = setTime
+  }, [setTime])
+
+  useEffect(() => {
+    restTimeRef.current = restTime
+  }, [restTime])
+
+  useEffect(() => {
+    setExercises(loadExercises())
+    setExercisesReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!exercisesReady) return
+    saveExercises(exercises)
+  }, [exercises, exercisesReady])
+
+  useEffect(() => {
+    if (screen === "workoutHistory" || screen === "workoutHistoryDetail" || screen === "workout") {
+      setSavedWorkoutsList(loadSavedWorkouts())
+    }
+  }, [screen])
+
+  const sortedSavedWorkouts = useMemo(() => {
+    return [...savedWorkoutsList].sort(
+      (a, b) => new Date(b.sessionEndedAt).getTime() - new Date(a.sessionEndedAt).getTime(),
+    )
+  }, [savedWorkoutsList])
+
+  const currentExercise = useMemo(
+    () => exercises.find((e) => e.id === currentExerciseId) ?? null,
+    [exercises, currentExerciseId],
+  )
+
+  const lastSessionForCurrentExercise = useMemo(() => {
+    if (!currentExercise) return null
+    return findLastExerciseSession(savedWorkoutsList, currentExercise.name)
+  }, [savedWorkoutsList, currentExercise])
+
+  /** Next set index (1-based) for the exercise currently being logged */
+  const pendingLogSetNumber = useMemo(() => {
+    if (!pendingAfterStop) return 0
+    return sessionLogs.filter((l) => l.exerciseName === pendingAfterStop.exerciseName).length + 1
+  }, [pendingAfterStop, sessionLogs])
+
+  const lastTimeSetMatchingPending = useMemo(() => {
+    if (!pendingAfterStop || pendingLogSetNumber < 1) return undefined
+    return findLastExerciseSession(savedWorkoutsList, pendingAfterStop.exerciseName)?.sets[
+      pendingLogSetNumber - 1
+    ]
+  }, [savedWorkoutsList, pendingAfterStop, pendingLogSetNumber])
+
+  useEffect(() => {
+    if (!showLogForm || !showCustomReps) return
+    const id = requestAnimationFrame(() => {
+      repsInputRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [showLogForm, showCustomReps])
+
+  /** Rest runs whenever we are not in an active set and rest mode is on (e.g. after stop, including on log form) */
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>
+    if (isResting && !isSetActive && !isPaused) {
+      interval = setInterval(() => {
+        setRestTime((prev) => prev + 1)
+      }, 1000)
+    }
+    return () => clearInterval(interval)
+  }, [isResting, isSetActive, isPaused])
+
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>
+    if (isSetActive && !isPaused) {
+      interval = setInterval(() => {
+        setSetTime((prev) => prev + 1)
+      }, 1000)
+    }
+    return () => clearInterval(interval)
+  }, [isSetActive, isPaused])
+
+  const formatTime = useCallback((seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
+  }, [])
+
+  const resetDraft = () => {
+    setDraftName("")
+    setDraftW1("")
+    setDraftW2("")
+    setDraftW3("")
+  }
+
+  const addExercise = () => {
+    const name = draftName.trim()
+    const w1 = parseFloat(draftW1)
+    const w2 = parseFloat(draftW2)
+    const w3 = parseFloat(draftW3)
+    if (!name || [w1, w2, w3].some((w) => !Number.isFinite(w) || w < 0)) {
+      return
+    }
+    setExercises((prev) => [
+      ...prev,
+      { id: newExerciseId(), name, weights: [w1, w2, w3] as [number, number, number] },
+    ])
+    resetDraft()
+  }
+
+  const removeExercise = (id: string) => {
+    setExercises((prev) => prev.filter((e) => e.id !== id))
+    if (currentExerciseId === id) setCurrentExerciseId(null)
+  }
+
+  const resetWorkoutSession = useCallback(() => {
+    setSessionId("")
+    setSessionStartedAt("")
+    setCurrentExerciseId(null)
+    setSessionLogs([])
+    setPendingAfterStop(null)
+    setShowLogForm(false)
+    setSelectedWeight(null)
+    setCustomWeight("")
+    setReps("")
+    setIsSetActive(false)
+    setIsResting(false)
+    setIsPaused(false)
+    setRestTime(0)
+    setSetTime(0)
+    setPostSaveComparison(null)
+    if (postSaveComparisonTimerRef.current) {
+      clearTimeout(postSaveComparisonTimerRef.current)
+      postSaveComparisonTimerRef.current = null
+    }
+  }, [])
+
+  const startWorkout = () => {
+    if (exercises.length === 0) return
+    const first = exercises[0]
+    const start = new Date()
+    resetWorkoutSession()
+    setSessionId(`sess-${start.getTime()}-${Math.random().toString(36).slice(2, 7)}`)
+    setSessionStartedAt(start.toISOString())
+    setCurrentExerciseId(first.id)
+    setIsPaused(false)
+    setScreen("workout")
+  }
+
+  /** Settings only: does not clear an in-progress workout (none reachable from here today) */
+  const returnFromSettingsToHome = () => {
+    setScreen("home")
+  }
+
+  const openPause = () => {
+    setIsPaused(true)
+  }
+
+  const resumeWorkout = () => {
+    setIsPaused(false)
+  }
+
+  const confirmCancelWorkout = () => {
+    if (typeof window !== "undefined" && !window.confirm("Discard this workout? Nothing will be saved.")) {
+      return
+    }
+    resetWorkoutSession()
+    setIsPaused(false)
+    setScreen("home")
+  }
+
+  const dismissSummaryToHome = () => {
+    setSummaryWorkout(null)
+    setScreen("home")
+  }
+
+  const startSet = () => {
+    if (isPaused) return
+    const restToAttach = restTimeRef.current
+    if (isSetActive) return
+
+    setSessionLogs((prev) => {
+      if (prev.length === 0) return prev
+      const next = [...prev]
+      const i = next.length - 1
+      if (next[i].restBeforeNextSetSec == null) {
+        next[i] = { ...next[i], restBeforeNextSetSec: restToAttach }
+      }
+      return next
+    })
+
+    setIsResting(false)
+    setRestTime(0)
+    setSetTime(0)
+    setIsSetActive(true)
+  }
+
+  const stopSet = () => {
+    if (isPaused) return
+    if (!currentExercise) return
+    const ended = new Date()
+    const duration = setTimeRef.current
+
+    const name = currentExercise.name
+    const [w1, w2, w3] = currentExercise.weights
+    const forExercise = sessionLogs.filter((l) => l.exerciseName === name)
+    const lastInSession = forExercise.length ? forExercise[forExercise.length - 1] : null
+    const setIndex0 = forExercise.length
+    const lastSess = findLastExerciseSession(savedWorkoutsList, name)
+    const lastTimeThisSet = lastSess?.sets[setIndex0]
+
+    let targetW: number
+    if (lastInSession) targetW = lastInSession.weight
+    else if (lastTimeThisSet) targetW = lastTimeThisSet.weight
+    else targetW = w1
+
+    const near = (x: number, y: number) => Math.abs(x - y) < 1e-6
+    let preset: number | null = null
+    let customW = ""
+    if (near(targetW, w1)) preset = w1
+    else if (near(targetW, w2)) preset = w2
+    else if (near(targetW, w3)) preset = w3
+    else {
+      const rounded = Math.round(targetW * 10) / 10
+      customW = String(rounded)
+    }
+
+    setPendingAfterStop({
+      exerciseId: currentExercise.id,
+      exerciseName: currentExercise.name,
+      setEndedAt: ended,
+      setDurationSec: duration,
+    })
+    setIsSetActive(false)
+    setIsResting(true)
+    setRestTime(0)
+    setShowLogForm(true)
+    setSelectedWeight(preset)
+    setCustomWeight(customW)
+    setShowCustomReps(false)
+    const baseReps = getSuggestedRepsForWeight(name, targetW, sessionLogs, savedWorkoutsList)
+    setReps(String(baseReps))
+  }
+
+  const saveSet = () => {
+    if (!pendingAfterStop) return
+    const fromPreset = selectedWeight != null
+    const fromCustom = customWeight.trim() !== "" && !fromPreset
+    const weight = fromPreset
+      ? selectedWeight!
+      : fromCustom
+        ? parseFloat(customWeight)
+        : NaN
+    const repCount = parseInt(reps, 10)
+    if (!Number.isFinite(weight) || weight <= 0) return
+    if (!Number.isFinite(repCount) || repCount <= 0) return
+
+    const p = pendingAfterStop
+    const setIndex0 = sessionLogs.filter((l) => l.exerciseName === p.exerciseName).length
+    const lastSess = findLastExerciseSession(savedWorkoutsList, p.exerciseName)
+    const prevMatching = lastSess?.sets[setIndex0]
+    const comparison = compareSetToPrevious({ weight, reps: repCount }, prevMatching)
+
+    const tone: "up" | "down" | "same" | "new" = (() => {
+      if (!prevMatching) return "new"
+      const near = (x: number, y: number) => Math.abs(x - y) < 1e-6
+      if (near(weight, prevMatching.weight) && repCount === prevMatching.reps) return "same"
+      if (!near(weight, prevMatching.weight)) return weight > prevMatching.weight ? "up" : "down"
+      return repCount > prevMatching.reps ? "up" : "down"
+    })()
+
+    const prevBest = (() => {
+      let best = -Infinity
+      for (const w of savedWorkoutsList) {
+        for (const g of w.byExercise) {
+          if (g.exerciseName !== p.exerciseName) continue
+          for (const s of g.sets) {
+            const v = s.weight * s.reps
+            if (Number.isFinite(v)) best = Math.max(best, v)
+          }
+        }
+      }
+      return best
+    })()
+    const curVol = weight * repCount
+    const isPersonalBest = Number.isFinite(curVol) && curVol > prevBest
+
+    setSessionLogs((prev) => [
+      ...prev,
+      {
+        id: `set-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        sessionId,
+        sessionStartedAt,
+        exerciseId: p.exerciseId,
+        exerciseName: p.exerciseName,
+        weight,
+        reps: repCount,
+        setEndedAt: p.setEndedAt.toISOString(),
+        setDurationSec: p.setDurationSec,
+        restBeforeNextSetSec: null,
+      },
+    ])
+    setPendingAfterStop(null)
+    setShowLogForm(false)
+
+    setPostSaveComparison({ text: comparison, tone, isPersonalBest })
+    if (postSaveComparisonTimerRef.current) clearTimeout(postSaveComparisonTimerRef.current)
+    postSaveComparisonTimerRef.current = setTimeout(() => {
+      setPostSaveComparison(null)
+      postSaveComparisonTimerRef.current = null
+    }, 5000)
+  }
+
+  const selectWeight = (weight: number) => {
+    setSelectedWeight(weight)
+    setCustomWeight("")
+    if (pendingAfterStop) {
+      const nextReps = getSuggestedRepsForWeight(
+        pendingAfterStop.exerciseName,
+        weight,
+        sessionLogs,
+        savedWorkoutsList,
+      )
+      setReps(String(nextReps))
+    }
+  }
+
+  const handleCustomWeight = (value: string) => {
+    setCustomWeight(value)
+    setSelectedWeight(null)
+    if (pendingAfterStop) {
+      const w = parseFloat(value)
+      if (Number.isFinite(w) && w > 0) {
+        const nextReps = getSuggestedRepsForWeight(
+          pendingAfterStop.exerciseName,
+          w,
+          sessionLogs,
+          savedWorkoutsList,
+        )
+        setReps(String(nextReps))
+      }
+    }
+  }
+
+  const exerciseOrder = useMemo(() => {
+    const order: string[] = []
+    for (const l of sessionLogs) {
+      if (!order.includes(l.exerciseName)) order.push(l.exerciseName)
+    }
+    return order
+  }, [sessionLogs])
+
+  const logsByExercise = useMemo(() => {
+    const m = new Map<string, SessionSetLog[]>()
+    for (const l of sessionLogs) {
+      const list = m.get(l.exerciseName) ?? []
+      list.push(l)
+      m.set(l.exerciseName, list)
+    }
+    return m
+  }, [sessionLogs])
+
+  const logExercise = pendingAfterStop
+    ? exercises.find((e) => e.id === pendingAfterStop.exerciseId) ?? null
+    : null
+
+  const finishAndSaveWorkout = useCallback(() => {
+    if (showLogForm) {
+      if (typeof window !== "undefined") {
+        window.alert("Save the current set before finishing the workout.")
+      }
+      return
+    }
+    const ended = new Date()
+    const order: string[] = []
+    const m = new Map<string, SessionSetLog[]>()
+    for (const l of sessionLogs) {
+      if (!order.includes(l.exerciseName)) order.push(l.exerciseName)
+      const list = m.get(l.exerciseName) ?? []
+      list.push(l)
+      m.set(l.exerciseName, list)
+    }
+    const byExercise = order.map((name) => ({
+      exerciseName: name,
+      sets: (m.get(name) ?? []).map((l) => ({
+        id: l.id,
+        weight: l.weight,
+        reps: l.reps,
+        setEndedAt: l.setEndedAt,
+        setDurationSec: l.setDurationSec,
+        restBeforeNextSetSec: l.restBeforeNextSetSec,
+      })),
+    }))
+    const total = Math.max(
+      0,
+      Math.round((ended.getTime() - new Date(sessionStartedAt).getTime()) / 1000),
+    )
+    const saved: SavedWorkout = {
+      id: newSavedWorkoutId(),
+      sessionId: sessionId || "session",
+      sessionStartedAt,
+      sessionEndedAt: ended.toISOString(),
+      totalDurationSec: total,
+      exercisesPerformed: order,
+      byExercise,
+    }
+    appendSavedWorkout(saved)
+    setSummaryWorkout(saved)
+    resetWorkoutSession()
+    setIsPaused(false)
+    setScreen("workoutSummary")
+  }, [sessionLogs, sessionId, sessionStartedAt, resetWorkoutSession, showLogForm])
+
+  // —— Home
+  if (screen === "home") {
+    return (
+      <div className="relative flex min-h-screen flex-col items-center justify-center bg-background p-6">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            setScreen("settings")
+            resetDraft()
+          }}
+          className="absolute right-4 top-4 text-muted-foreground hover:text-foreground"
+          aria-label="Open settings"
+        >
+          <Settings className="size-5" />
+        </Button>
+
+        <Button
+          type="button"
+          onClick={startWorkout}
+          size="lg"
+          disabled={exercises.length === 0}
+          className="h-20 min-w-[16rem] rounded-2xl bg-primary px-10 text-lg font-semibold text-primary-foreground transition-transform active:scale-95 disabled:opacity-40"
+        >
+          <Play className="mr-2 size-6 shrink-0" />
+          Start Workout
+        </Button>
+        {exercises.length === 0 && (
+          <p className="mt-4 max-w-xs text-center text-sm text-muted-foreground">
+            Add exercises in settings (the gear above) before you can start.
+          </p>
+        )}
+        <Button
+          type="button"
+          variant="link"
+          onClick={() => setScreen("workoutHistory")}
+          className="mt-8 text-sm font-normal text-muted-foreground underline-offset-4 hover:text-foreground"
+        >
+          Workout History
+        </Button>
+      </div>
+    )
+  }
+
+  // —— Workout History (list)
+  if (screen === "workoutHistory") {
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setHistoryDetailWorkout(null)
+              setScreen("home")
+            }}
+            aria-label="Back to home"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Workout History</h1>
+        </header>
+        {sortedSavedWorkouts.length === 0 ? (
+          <p className="mt-12 text-center text-sm text-muted-foreground">No workouts logged yet</p>
+        ) : (
+          <ul className="mx-auto w-full max-w-md space-y-3">
+            {sortedSavedWorkouts.map((w) => (
+              <li key={w.id}>
+                <div className="w-full rounded-xl border border-border bg-card p-4 text-left shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      {historyEditingId === w.id ? (
+                        <div className="space-y-2">
+                          <Input
+                            value={historyDraftName}
+                            onChange={(e) => setHistoryDraftName(e.target.value)}
+                            className="h-10"
+                            placeholder="Workout name"
+                          />
+                          <div className="flex gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => {
+                                updateSavedWorkoutName(w.id, historyDraftName)
+                                setSavedWorkoutsList(loadSavedWorkouts())
+                                setHistoryEditingId(null)
+                                setHistoryDraftName("")
+                              }}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setHistoryEditingId(null)
+                                setHistoryDraftName("")
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHistoryDetailWorkout(w)
+                            setScreen("workoutHistoryDetail")
+                          }}
+                          className="w-full text-left"
+                        >
+                          <p className="font-medium text-foreground truncate">
+                            {w.name?.trim() ? w.name : formatSessionDate(w.sessionEndedAt)}
+                          </p>
+                          <p className="mt-1.5 text-sm text-muted-foreground">
+                            <span>{formatTime(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)} total</span>
+                            <span className="mx-1.5">·</span>
+                            <span>{savedWorkoutExerciseCount(w)} exercises</span>
+                            <span className="mx-1.5">·</span>
+                            <span>{savedWorkoutTotalSets(w)} sets</span>
+                          </p>
+                        </button>
+                      )}
+                    </div>
+                    {historyEditingId !== w.id ? (
+                      <div className="flex shrink-0 gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground"
+                          onClick={() => {
+                            setHistoryEditingId(w.id)
+                            setHistoryDraftName(w.name?.trim() ? w.name : "")
+                          }}
+                          aria-label="Rename workout"
+                        >
+                          <Pencil className="size-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground"
+                          onClick={() => {
+                            if (typeof window !== "undefined" && !window.confirm("Delete this workout?")) return
+                            deleteSavedWorkout(w.id)
+                            setSavedWorkoutsList(loadSavedWorkouts())
+                            if (historyDetailWorkout?.id === w.id) setHistoryDetailWorkout(null)
+                          }}
+                          aria-label="Delete workout"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          className="mx-auto mt-8 w-full max-w-md shrink-0"
+          onClick={() => {
+            setHistoryDetailWorkout(null)
+            setScreen("home")
+          }}
+        >
+          Back to Home
+        </Button>
+      </div>
+    )
+  }
+
+  // —— Workout History (saved session detail)
+  if (screen === "workoutHistoryDetail") {
+    if (!historyDetailWorkout) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6">
+          <p className="text-sm text-muted-foreground">Workout not found.</p>
+          <Button type="button" variant="outline" onClick={() => setScreen("workoutHistory")}>
+            Back to history
+          </Button>
+        </div>
+      )
+    }
+    const w = historyDetailWorkout
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setHistoryDetailWorkout(null)
+              setScreen("workoutHistory")
+            }}
+            aria-label="Back to workout history"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Saved workout</h1>
+        </header>
+        <div className="mx-auto mb-3 w-full max-w-md rounded-xl border border-border bg-card p-3 shadow-sm">
+          {historyEditingId === w.id ? (
+            <div className="space-y-2">
+              <Label htmlFor="workout-name" className="text-xs text-muted-foreground">
+                Workout name
+              </Label>
+              <Input
+                id="workout-name"
+                value={historyDraftName}
+                onChange={(e) => setHistoryDraftName(e.target.value)}
+                className="h-10"
+                placeholder={formatSessionDate(w.sessionEndedAt)}
+              />
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    updateSavedWorkoutName(w.id, historyDraftName)
+                    const next = loadSavedWorkouts()
+                    setSavedWorkoutsList(next)
+                    const updated = next.find((x) => x.id === w.id) ?? null
+                    setHistoryDetailWorkout(updated)
+                    setHistoryEditingId(null)
+                    setHistoryDraftName("")
+                  }}
+                >
+                  Save
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setHistoryEditingId(null)
+                    setHistoryDraftName("")
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 font-medium text-foreground truncate">
+                {w.name?.trim() ? w.name : formatSessionDate(w.sessionEndedAt)}
+              </p>
+              <div className="flex shrink-0 gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground"
+                  onClick={() => {
+                    setHistoryEditingId(w.id)
+                    setHistoryDraftName(w.name?.trim() ? w.name : "")
+                  }}
+                  aria-label="Rename workout"
+                >
+                  <Pencil className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground"
+                  onClick={() => {
+                    if (typeof window !== "undefined" && !window.confirm("Delete this workout?")) return
+                    deleteSavedWorkout(w.id)
+                    const next = loadSavedWorkouts()
+                    setSavedWorkoutsList(next)
+                    setHistoryDetailWorkout(null)
+                    setScreen("workoutHistory")
+                  }}
+                  aria-label="Delete workout"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="mx-auto w-full max-w-md space-y-1 text-sm text-muted-foreground">
+          <p>
+            <span className="text-foreground/80">Started</span> {formatSessionDate(w.sessionStartedAt)}
+          </p>
+          <p>
+            <span className="text-foreground/80">Ended</span> {formatSessionDate(w.sessionEndedAt)}
+          </p>
+          <p>
+            <span className="text-foreground/80">Total</span>{" "}
+            {formatTime(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+          </p>
+        </div>
+        <div className="mx-auto mt-6 w-full max-w-md flex-1 space-y-6 overflow-y-auto pb-8">
+          {w.byExercise.map((g) => (
+            <section key={g.exerciseName}>
+              <h2 className="text-sm font-semibold text-foreground">{g.exerciseName}</h2>
+              <ul className="mt-2 space-y-2">
+                {g.sets.map((s) => (
+                  <li
+                    key={s.id}
+                    className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2.5 text-sm"
+                  >
+                    <div className="font-medium text-foreground">
+                      {s.weight} kg × {s.reps}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Rest before next:{" "}
+                      {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
+                      {typeof s.setDurationSec === "number" && s.setDurationSec > 0 ? (
+                        <span> · Set duration {formatTime(s.setDurationSec)}</span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="mx-auto mt-4 w-full max-w-md"
+          onClick={() => {
+            setHistoryDetailWorkout(null)
+            setScreen("home")
+          }}
+        >
+          Back to Home
+        </Button>
+      </div>
+    )
+  }
+
+  // —— Settings
+  if (screen === "settings") {
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={returnFromSettingsToHome}
+            aria-label="Back to home"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Exercises</h1>
+        </header>
+
+        <div className="mx-auto mb-6 w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-foreground">Theme</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Light is the default. Dark is available for low light.</p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={theme === "light" ? "default" : "secondary"}
+              className={cn(theme === "light" && "bg-primary text-primary-foreground")}
+              onClick={() => setTheme("light")}
+            >
+              Light
+            </Button>
+            <Button
+              type="button"
+              variant={theme === "dark" ? "default" : "secondary"}
+              className={cn(theme === "dark" && "bg-primary text-primary-foreground")}
+              onClick={() => setTheme("dark")}
+            >
+              Dark
+            </Button>
+          </div>
+        </div>
+
+        <div className="mx-auto w-full max-w-md space-y-3 rounded-xl border border-border p-4">
+          <p className="text-xs text-muted-foreground">
+            Set a name and three preset weights (kg) for this exercise.
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor="ex-name">Name</Label>
+            <Input
+              id="ex-name"
+              placeholder="Bicep Curl"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <Label htmlFor="w1" className="text-xs">
+                Preset 1 (kg)
+              </Label>
+              <Input
+                id="w1"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.5"
+                placeholder="10"
+                value={draftW1}
+                onChange={(e) => setDraftW1(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="w2" className="text-xs">
+                Preset 2
+              </Label>
+              <Input
+                id="w2"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.5"
+                placeholder="15"
+                value={draftW2}
+                onChange={(e) => setDraftW2(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="w3" className="text-xs">
+                Preset 3
+              </Label>
+              <Input
+                id="w3"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.5"
+                placeholder="18"
+                value={draftW3}
+                onChange={(e) => setDraftW3(e.target.value)}
+              />
+            </div>
+          </div>
+          <Button
+            type="button"
+            onClick={addExercise}
+            className="w-full"
+            disabled={
+              !draftName.trim() ||
+              [draftW1, draftW2, draftW3].some(
+                (s) => !s.trim() || !Number.isFinite(parseFloat(s)) || parseFloat(s) < 0,
+              )
+            }
+          >
+            Save exercise
+          </Button>
+        </div>
+
+        <div className="mx-auto mt-6 w-full max-w-md">
+          <h2 className="mb-2 text-sm font-medium text-muted-foreground">Saved</h2>
+          {exercises.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No exercises yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {exercises.map((e) => (
+                <li
+                  key={e.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium truncate">{e.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {e.weights.map((w) => `${w} kg`).join(" · ")}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0 text-muted-foreground"
+                    onClick={() => removeExercise(e.id)}
+                    aria-label={`Remove ${e.name}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // —— Workout summary (after Finish & Save)
+  if (screen === "workoutSummary" && summaryWorkout) {
+    const w = summaryWorkout
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <h1 className="text-xl font-semibold">Workout saved</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Stored on this device only.</p>
+        <div className="mt-4 space-y-2 rounded-xl border border-border p-4 text-sm">
+          <p>
+            <span className="text-muted-foreground">Started</span>{" "}
+            <span className="font-medium">{formatSessionDate(w.sessionStartedAt)}</span>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Ended</span>{" "}
+            <span className="font-medium">{formatSessionDate(w.sessionEndedAt)}</span>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Total time</span>{" "}
+            <span className="font-medium">{formatTime(w.totalDurationSec)}</span>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Exercises</span>{" "}
+            <span className="font-medium">
+              {w.exercisesPerformed.length ? w.exercisesPerformed.join(", ") : "—"}
+            </span>
+          </p>
+        </div>
+        <div className="mt-6 flex-1 space-y-4 overflow-y-auto">
+          {w.byExercise.map((g) => (
+            <div key={g.exerciseName}>
+              <h2 className="text-sm font-semibold">{g.exerciseName}</h2>
+              <ul className="mt-2 space-y-2">
+                {g.sets.map((s) => (
+                  <li
+                    key={s.id}
+                    className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left text-sm"
+                  >
+                    <div>
+                      {s.reps} × {s.weight} kg
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      Ended {formatClock(s.setEndedAt)} · work {formatTime(s.setDurationSec)}
+                      {s.restBeforeNextSetSec != null
+                        ? ` · rest before next ${formatTime(s.restBeforeNextSetSec)}`
+                        : " · rest before next —"}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <Button type="button" className="mt-6" size="lg" onClick={dismissSummaryToHome}>
+          Done
+        </Button>
+      </div>
+    )
+  }
+
+  // —— Workout
+  if (screen === "workout" && !currentExercise) {
+    return (
+      <div className="relative min-h-screen flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
+        <p className="text-muted-foreground">No exercise selected.</p>
+        <Button type="button" onClick={openPause}>
+          Pause
+        </Button>
+        {isPaused && (
+          <WorkoutPauseOverlay
+            onResume={resumeWorkout}
+            onFinish={finishAndSaveWorkout}
+            onCancel={confirmCancelWorkout}
+          />
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative flex min-h-screen flex-col bg-background">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
+        <div className="flex min-w-0 items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={openPause}
+            aria-label="Pause workout"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <div className="ml-1 min-w-0 text-sm text-muted-foreground">
+            <span>Workout</span>
+            {sessionStartedAt ? (
+              <span className="ml-2 hidden text-xs sm:inline">· {formatSessionDate(sessionStartedAt)}</span>
+            ) : null}
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={openPause}
+          className="shrink-0 gap-1.5"
+        >
+          <Pause className="size-4" />
+          Pause
+        </Button>
+      </div>
+
+      <div className="no-scrollbar border-b border-border px-2 py-2">
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {exercises.map((ex) => (
+            <button
+              key={ex.id}
+              type="button"
+              onClick={() => {
+                if (showLogForm || isPaused) return
+                setPostSaveComparison(null)
+                if (postSaveComparisonTimerRef.current) {
+                  clearTimeout(postSaveComparisonTimerRef.current)
+                  postSaveComparisonTimerRef.current = null
+                }
+                setCurrentExerciseId(ex.id)
+              }}
+              disabled={showLogForm || isPaused}
+              className={cn(
+                "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                (showLogForm || isPaused) && "opacity-50",
+                currentExerciseId === ex.id
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-secondary text-muted-foreground hover:bg-secondary/80",
+              )}
+            >
+              {ex.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {currentExercise && lastSessionForCurrentExercise && !showLogForm && (
+        <div className="border-b border-border px-4 py-3">
+          <div className="mx-auto w-full max-w-md rounded-xl border border-border bg-card px-3 py-3 shadow-sm">
+            <p className="text-xs font-medium text-muted-foreground">
+              Last time:{" "}
+              <span className="text-foreground">
+                {formatShortSessionDay(lastSessionForCurrentExercise.sessionEndedAt)}
+              </span>
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {lastSessionForCurrentExercise.sets.length} set
+              {lastSessionForCurrentExercise.sets.length !== 1 ? "s" : ""}
+            </p>
+            <ul className="mt-2 space-y-1.5 text-sm">
+              {lastSessionForCurrentExercise.sets.map((s, i) => (
+                <li key={i} className="text-foreground">
+                  Set {i + 1}: {s.weight} kg x {s.reps}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      <div
+        className={cn("flex min-h-0 flex-1 flex-col px-4 pt-4", showLogForm && "pointer-events-none select-none opacity-0")}
+        aria-hidden={showLogForm}
+      >
+        <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">Timer</p>
+        <p
+          className={cn(
+            "mt-1 text-center font-mono text-5xl font-bold tabular-nums sm:text-6xl",
+            isPaused
+              ? "text-muted-foreground"
+              : isSetActive
+                ? "text-primary"
+                : isResting
+                  ? "text-orange-400"
+                  : "text-foreground",
+          )}
+        >
+          {formatTime(isSetActive ? setTime : restTime)}
+        </p>
+        <p className="mt-1 text-center text-sm text-muted-foreground">
+          {isPaused ? "Paused" : isSetActive ? "Set" : isResting ? "Rest" : "Ready"}
+        </p>
+
+        {postSaveComparison && !showLogForm && (
+          <div className="mt-4 text-center" role="status" aria-live="polite">
+            <p
+              className={cn(
+                "text-sm font-medium",
+                postSaveComparison.tone === "up" && "text-emerald-600 dark:text-emerald-400",
+                postSaveComparison.tone === "down" && "text-rose-600 dark:text-rose-400",
+                (postSaveComparison.tone === "same" || postSaveComparison.tone === "new") &&
+                  "text-muted-foreground",
+              )}
+            >
+              {postSaveComparison.text}
+            </p>
+            {postSaveComparison.isPersonalBest && (
+              <p className="mt-1 text-xs font-semibold tracking-wide text-amber-600 drop-shadow-[0_0_6px_rgba(251,191,36,0.35)] dark:text-amber-400">
+                NEW PERSONAL BEST
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-8 flex w-full max-w-xs flex-col gap-3 self-center">
+          {!isSetActive ? (
+            <Button
+              type="button"
+              onClick={startSet}
+              size="lg"
+              className="h-14 rounded-2xl text-base font-semibold"
+              disabled={showLogForm || isPaused}
+            >
+              <Play className="mr-2 size-5" />
+              Start set
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={stopSet}
+              size="lg"
+              variant="destructive"
+              className="h-14 rounded-2xl text-base font-semibold"
+            >
+              <Square className="mr-2 size-5" />
+              Stop set
+            </Button>
+          )}
+        </div>
+
+        {sessionLogs.length > 0 && (
+          <div className="mt-6 w-full max-w-md flex-1 self-center overflow-y-auto pb-6">
+            <h3 className="mb-3 text-sm font-medium text-foreground">Session log</h3>
+            {sessionStartedAt && (
+              <p className="mb-3 text-xs text-muted-foreground">Started {formatSessionDate(sessionStartedAt)}</p>
+            )}
+            <div className="space-y-4">
+              {exerciseOrder.map((name) => {
+                const list = logsByExercise.get(name) ?? []
+                return (
+                  <div key={name}>
+                    <h4 className="mb-1.5 text-sm font-semibold text-foreground">{name}</h4>
+                    <ul className="space-y-2 text-sm">
+                      {list.map((log) => (
+                        <li
+                          key={log.id}
+                          className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left leading-snug"
+                        >
+                          <div>
+                            {log.reps} reps @ {log.weight} kg
+                          </div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            Set ended {formatClock(log.setEndedAt)} · work {formatTime(log.setDurationSec)}
+                            {log.restBeforeNextSetSec != null
+                              ? ` · rest before next ${formatTime(log.restBeforeNextSetSec)}`
+                              : " · rest before next — (until you start the next set)"}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Logging overlay: rest already running; form does not block the rest timer (Issue 2) */}
+      {showLogForm && logExercise && pendingAfterStop && (
+        <div
+          className="absolute inset-0 z-20 flex flex-col bg-background/98 p-4 pt-6"
+          style={{ pointerEvents: "auto" }}
+        >
+          <div className="mb-4 flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
+            <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+              <span className="text-sm text-muted-foreground">
+                {isPaused ? "Rest (paused)" : "Rest (running)"}
+              </span>
+              <span className="font-mono text-xl font-bold tabular-nums text-orange-400">
+                {formatTime(restTime)}
+              </span>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={openPause}
+              className="shrink-0 gap-1"
+            >
+              <Pause className="size-4" />
+              Pause
+            </Button>
+          </div>
+          <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
+          <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
+          <div className="mb-4 space-y-1 text-center text-sm text-muted-foreground">
+            <p>
+              <span className="text-foreground">Current set {pendingLogSetNumber}</span>
+            </p>
+            {lastTimeSetMatchingPending ? (
+              <p>
+                Last time set {pendingLogSetNumber}:{" "}
+                <span className="font-medium text-foreground">
+                  {lastTimeSetMatchingPending.weight} kg x {lastTimeSetMatchingPending.reps}
+                </span>
+              </p>
+            ) : (
+              <p className="text-xs">No matching set from last time</p>
+            )}
+          </div>
+          <form
+            className="flex min-h-0 flex-1 flex-col"
+            onSubmit={(e) => {
+              e.preventDefault()
+              saveSet()
+            }}
+          >
+            <div className="mb-4">
+              <span className="mb-2 block text-sm font-medium text-muted-foreground">Weight (kg)</span>
+              <div className="grid grid-cols-3 gap-2">
+                {logExercise.weights.map((w, i) => (
+                  <Button
+                    key={i}
+                    type="button"
+                    variant={selectedWeight === w ? "default" : "secondary"}
+                    className={cn(
+                      "h-12 text-sm font-semibold",
+                      selectedWeight === w && "bg-primary text-primary-foreground",
+                    )}
+                    onClick={() => selectWeight(w)}
+                  >
+                    {w} kg
+                  </Button>
+                ))}
+              </div>
+              <Input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.5"
+                placeholder="Custom weight (kg)"
+                value={customWeight}
+                onChange={(e) => handleCustomWeight(e.target.value)}
+                className="mt-2 h-11 text-center text-base"
+              />
+            </div>
+            <div className="mb-2">
+              <span className="text-sm font-medium text-muted-foreground">Reps</span>
+              <div className="mt-2 flex items-center justify-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
+                  onClick={() => {
+                    const n = parseInt(reps, 10)
+                    const cur = Number.isFinite(n) ? n : 8
+                    const next = Math.max(1, cur - 1)
+                    setReps(String(next))
+                  }}
+                  aria-label="Decrease reps"
+                >
+                  −
+                </Button>
+                <div className="px-1 text-center">
+                  <div className="text-4xl font-bold tabular-nums text-foreground leading-none">
+                    {(() => {
+                      const n = parseInt(reps, 10)
+                      const cur = Number.isFinite(n) ? n : 8
+                      const clamped = Math.min(99, Math.max(1, cur))
+                      return clamped
+                    })()}
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground leading-none">reps</div>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
+                  onClick={() => {
+                    const n = parseInt(reps, 10)
+                    const cur = Number.isFinite(n) ? n : 8
+                    const next = Math.min(99, cur + 1)
+                    setReps(String(next))
+                  }}
+                  aria-label="Increase reps"
+                >
+                  +
+                </Button>
+              </div>
+
+              <div className="mt-3">
+                {!showCustomReps ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-9 w-full text-xs text-muted-foreground"
+                    onClick={() => setShowCustomReps(true)}
+                  >
+                    Custom
+                  </Button>
+                ) : (
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label htmlFor="reps-custom" className="text-xs text-muted-foreground">
+                        Custom reps
+                      </Label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="h-8 px-2 text-xs text-muted-foreground"
+                        onClick={() => setShowCustomReps(false)}
+                      >
+                        Done
+                      </Button>
+                    </div>
+                    <Input
+                      ref={repsInputRef}
+                      id="reps-custom"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={99}
+                      placeholder="Reps"
+                      value={reps}
+                      onChange={(e) => setReps(e.target.value)}
+                      className="mt-1 h-11 text-center text-base"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+            <p className="mb-3 text-center text-xs text-muted-foreground">
+              Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} (
+              {formatTime(pendingAfterStop.setDurationSec)} of work)
+            </p>
+            <div className="mt-auto">
+              <Button
+                type="submit"
+                size="lg"
+                className="h-12 w-full rounded-xl text-base font-semibold"
+                disabled={
+                  (selectedWeight == null && !customWeight.trim()) ||
+                  !reps.trim() ||
+                  !Number.isFinite(parseInt(reps, 10)) ||
+                  parseInt(reps, 10) < 1
+                }
+              >
+                <Check className="mr-2 size-5" />
+                Save
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {isPaused && (
+        <WorkoutPauseOverlay
+          onResume={resumeWorkout}
+          onFinish={finishAndSaveWorkout}
+          onCancel={confirmCancelWorkout}
+        />
+      )}
+    </div>
+  )
+}
