@@ -11,6 +11,24 @@ export type StoredExercise = {
   weights: [number, number, number]
 }
 
+function inferCategoryFromName(name: string): StoredExercise["category"] | undefined {
+  const n = name.trim().toLowerCase()
+  // Push
+  if (n === "bench press") return "Push"
+  if (n === "shoulder press") return "Push"
+  if (n === "dips" || n === "dip") return "Push"
+  // Pull
+  if (n === "pull-ups" || n === "pullups" || n === "pull ups" || n === "pullup") return "Pull"
+  if (n === "lat pulldown" || n === "lat pull-down" || n === "lat pull down") return "Pull"
+  if (n === "cable row" || n === "seated row") return "Pull"
+  if (n === "bicep curl" || n === "biceps curl") return "Pull"
+  // Legs
+  if (n === "squat") return "Legs"
+  if (n === "deadlift") return "Legs"
+  if (n === "leg press") return "Legs"
+  return undefined
+}
+
 export function loadExercises(): StoredExercise[] {
   if (typeof window === "undefined") return []
   try {
@@ -39,7 +57,7 @@ export function loadExercises(): StoredExercise[] {
           (e as StoredExercise).category === "Pull" ||
           (e as StoredExercise).category === "Legs"
             ? (e as StoredExercise).category
-            : undefined,
+            : inferCategoryFromName(e.name),
         order: Number.isFinite((e as StoredExercise).order) ? Number((e as StoredExercise).order) : undefined,
         weights: [
           Number(e.weights[0]) || 0,

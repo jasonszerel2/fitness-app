@@ -5,6 +5,7 @@ import { Play, Square, Check, Settings, ArrowLeft, Trash2, Pause, Pencil, ArrowU
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { useTheme } from "next-themes"
 import {
@@ -165,6 +166,11 @@ function groupExercisesForUI(exercises: StoredExercise[]) {
       }),
     }))
     .filter((g) => g.items.length > 0)
+}
+
+function categoryToSelectValue(c: StoredExercise["category"]): ExerciseTab {
+  if (c === "Push" || c === "Pull" || c === "Legs") return c
+  return "Other"
 }
 
 function starterExercises(level: StarterLevel, newId: () => string): StoredExercise[] {
@@ -1276,6 +1282,27 @@ export function FitnessApp() {
                           <p className="text-xs text-muted-foreground">
                             {e.weights.map((w) => `${w} kg`).join(" · ")}
                           </p>
+                          <div className="mt-2">
+                            <Select
+                              value={categoryToSelectValue(e.category)}
+                              onValueChange={(v) => {
+                                const category = v === "Push" || v === "Pull" || v === "Legs" ? v : undefined
+                                setExercises((prev) =>
+                                  prev.map((x) => (x.id === e.id ? { ...x, category } : x)),
+                                )
+                              }}
+                            >
+                              <SelectTrigger size="sm" className="w-full max-w-[10.5rem]">
+                                <SelectValue placeholder="Category" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="Push">Push</SelectItem>
+                                <SelectItem value="Pull">Pull</SelectItem>
+                                <SelectItem value="Legs">Legs</SelectItem>
+                                <SelectItem value="Other">Other</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <Button
