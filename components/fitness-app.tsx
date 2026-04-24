@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { Play, Square, Check, Settings, ArrowLeft, Trash2, Pause, Pencil } from "lucide-react"
+import { Play, Square, Check, Settings, ArrowLeft, Trash2, Pause, Pencil, ArrowUp, ArrowDown, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,6 +32,7 @@ type Screen =
   | "workoutHistoryDetail"
 
 type StarterLevel = "newbie" | "intermediate" | "charles"
+type ExerciseTab = "All" | "Push" | "Pull" | "Legs" | "Other"
 
 /** One row in the current session’s log (in-memory, local to this app session) */
 type SessionSetLog = {
@@ -137,31 +138,87 @@ function savedWorkoutExerciseCount(w: SavedWorkout): number {
   return w.byExercise.length
 }
 
+function exerciseCategoryLabel(c: StoredExercise["category"]): "Push" | "Pull" | "Legs" | "Other" {
+  if (c === "Push" || c === "Pull" || c === "Legs") return c
+  return "Other"
+}
+
+function exerciseOrderValue(ex: StoredExercise, fallbackIndex: number) {
+  return Number.isFinite(ex.order) ? (ex.order as number) : 100000 + fallbackIndex
+}
+
+function groupExercisesForUI(exercises: StoredExercise[]) {
+  const order: Array<"Push" | "Pull" | "Legs" | "Other"> = ["Push", "Pull", "Legs", "Other"]
+  const map = new Map<(typeof order)[number], StoredExercise[]>()
+  for (const k of order) map.set(k, [])
+  for (const [idx, ex] of exercises.entries()) {
+    map.get(exerciseCategoryLabel(ex.category))!.push({ ...ex, order: ex.order ?? (100000 + idx) })
+  }
+  return order
+    .map((k) => ({
+      label: k,
+      items: (map.get(k) ?? []).sort((a, b) => {
+        const ao = exerciseOrderValue(a, 0)
+        const bo = exerciseOrderValue(b, 0)
+        if (ao !== bo) return ao - bo
+        return a.name.localeCompare(b.name)
+      }),
+    }))
+    .filter((g) => g.items.length > 0)
+}
+
 function starterExercises(level: StarterLevel, newId: () => string): StoredExercise[] {
-  const presets: Record<StarterLevel, Array<{ name: string; weights: [number, number, number] }>> = {
+  const presets: Record<
+    StarterLevel,
+    Array<{ name: string; category: NonNullable<StoredExercise["category"]>; weights: [number, number, number] }>
+  > = {
     newbie: [
-      { name: "Bench Press", weights: [20, 30, 40] },
-      { name: "Squat", weights: [30, 40, 50] },
-      { name: "Deadlift", weights: [40, 50, 60] },
-      { name: "Bicep Curl", weights: [6, 8, 10] },
-      { name: "Shoulder Press", weights: [10, 15, 20] },
+      // Push
+      { name: "Bench Press", category: "Push", weights: [20, 30, 40] },
+      { name: "Shoulder Press", category: "Push", weights: [10, 15, 20] },
+      { name: "Dips", category: "Push", weights: [10, 15, 20] },
+      // Pull
+      { name: "Pull-ups", category: "Pull", weights: [10, 15, 20] },
+      { name: "Lat Pulldown", category: "Pull", weights: [30, 40, 50] },
+      { name: "Cable Row", category: "Pull", weights: [25, 35, 45] },
+      { name: "Bicep Curl", category: "Pull", weights: [6, 8, 10] },
+      // Legs
+      { name: "Squat", category: "Legs", weights: [30, 40, 50] },
+      { name: "Deadlift", category: "Legs", weights: [40, 50, 60] },
+      { name: "Leg Press", category: "Legs", weights: [60, 80, 100] },
     ],
     intermediate: [
-      { name: "Bench Press", weights: [40, 60, 80] },
-      { name: "Squat", weights: [60, 80, 100] },
-      { name: "Deadlift", weights: [80, 100, 120] },
-      { name: "Bicep Curl", weights: [8, 10, 14] },
-      { name: "Shoulder Press", weights: [20, 25, 30] },
+      // Push
+      { name: "Bench Press", category: "Push", weights: [40, 60, 80] },
+      { name: "Shoulder Press", category: "Push", weights: [20, 25, 30] },
+      { name: "Dips", category: "Push", weights: [20, 30, 40] },
+      // Pull
+      { name: "Pull-ups", category: "Pull", weights: [20, 30, 40] },
+      { name: "Lat Pulldown", category: "Pull", weights: [50, 70, 90] },
+      { name: "Cable Row", category: "Pull", weights: [45, 60, 75] },
+      { name: "Bicep Curl", category: "Pull", weights: [8, 10, 14] },
+      // Legs
+      { name: "Squat", category: "Legs", weights: [60, 80, 100] },
+      { name: "Deadlift", category: "Legs", weights: [80, 100, 120] },
+      { name: "Leg Press", category: "Legs", weights: [100, 140, 180] },
     ],
     charles: [
-      { name: "Bench Press", weights: [80, 100, 120] },
-      { name: "Squat", weights: [100, 120, 140] },
-      { name: "Deadlift", weights: [120, 140, 160] },
-      { name: "Bicep Curl", weights: [14, 18, 22] },
-      { name: "Shoulder Press", weights: [30, 40, 50] },
+      // Push
+      { name: "Bench Press", category: "Push", weights: [80, 100, 120] },
+      { name: "Shoulder Press", category: "Push", weights: [30, 40, 50] },
+      { name: "Dips", category: "Push", weights: [40, 50, 60] },
+      // Pull
+      { name: "Pull-ups", category: "Pull", weights: [40, 50, 60] },
+      { name: "Lat Pulldown", category: "Pull", weights: [80, 100, 120] },
+      { name: "Cable Row", category: "Pull", weights: [70, 90, 110] },
+      { name: "Bicep Curl", category: "Pull", weights: [14, 18, 22] },
+      // Legs
+      { name: "Squat", category: "Legs", weights: [100, 120, 140] },
+      { name: "Deadlift", category: "Legs", weights: [120, 140, 160] },
+      { name: "Leg Press", category: "Legs", weights: [180, 220, 260] },
     ],
   }
-  return presets[level].map((e) => ({ id: newId(), name: e.name, weights: e.weights }))
+  return presets[level].map((e) => ({ id: newId(), name: e.name, category: e.category, weights: e.weights }))
 }
 
 function WorkoutPauseOverlay({
@@ -196,6 +253,13 @@ export function FitnessApp() {
   const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
   const [exercises, setExercises] = useState<StoredExercise[]>([])
+  const [workoutTab, setWorkoutTab] = useState<ExerciseTab>("All")
+  const [showQuickAddExercise, setShowQuickAddExercise] = useState(false)
+  const [quickAddName, setQuickAddName] = useState("")
+  const [quickAddCategory, setQuickAddCategory] = useState<ExerciseTab>("Other")
+  const [quickAddW1, setQuickAddW1] = useState("")
+  const [quickAddW2, setQuickAddW2] = useState("")
+  const [quickAddW3, setQuickAddW3] = useState("")
 
   const [sessionId, setSessionId] = useState("")
   const [sessionStartedAt, setSessionStartedAt] = useState("")
@@ -355,6 +419,29 @@ export function FitnessApp() {
   const removeExercise = (id: string) => {
     setExercises((prev) => prev.filter((e) => e.id !== id))
     if (currentExerciseId === id) setCurrentExerciseId(null)
+  }
+
+  const moveExerciseInGroup = (exerciseId: string, dir: -1 | 1) => {
+    setExercises((prev) => {
+      const groups = groupExercisesForUI(prev)
+      const group = groups.find((g) => g.items.some((e) => e.id === exerciseId))
+      if (!group) return prev
+      const sorted = group.items
+      const idx = sorted.findIndex((e) => e.id === exerciseId)
+      const j = idx + dir
+      if (idx < 0 || j < 0 || j >= sorted.length) return prev
+
+      const a = sorted[idx]
+      const b = sorted[j]
+      const ao = exerciseOrderValue(a, 0)
+      const bo = exerciseOrderValue(b, 0)
+
+      return prev.map((e) => {
+        if (e.id === a.id) return { ...e, order: bo }
+        if (e.id === b.id) return { ...e, order: ao }
+        return e
+      })
+    })
   }
 
   const resetWorkoutSession = useCallback(() => {
@@ -1172,31 +1259,64 @@ export function FitnessApp() {
           {exercises.length === 0 ? (
             <p className="text-sm text-muted-foreground">No exercises yet.</p>
           ) : (
-            <ul className="space-y-2">
-              {exercises.map((e) => (
-                <li
-                  key={e.id}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{e.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {e.weights.map((w) => `${w} kg`).join(" · ")}
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="shrink-0 text-muted-foreground"
-                    onClick={() => removeExercise(e.id)}
-                    aria-label={`Remove ${e.name}`}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </li>
+            <div className="space-y-5">
+              {groupExercisesForUI(exercises).map((group) => (
+                <section key={group.label}>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group.label}
+                  </h3>
+                  <ul className="space-y-2">
+                    {group.items.map((e, i) => (
+                      <li
+                        key={e.id}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card/70 px-3 py-2 shadow-sm"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-medium truncate">{e.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {e.weights.map((w) => `${w} kg`).join(" · ")}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => moveExerciseInGroup(e.id, -1)}
+                            aria-label={`Move ${e.name} up`}
+                            disabled={i === 0}
+                          >
+                            <ArrowUp className="size-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => moveExerciseInGroup(e.id, 1)}
+                            aria-label={`Move ${e.name} down`}
+                            disabled={i === group.items.length - 1}
+                          >
+                            <ArrowDown className="size-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => removeExercise(e.id)}
+                            aria-label={`Remove ${e.name}`}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               ))}
-            </ul>
+            </div>
           )}
         </div>
       </div>
@@ -1314,34 +1434,207 @@ export function FitnessApp() {
       </div>
 
       <div className="no-scrollbar border-b border-border px-2 py-2">
-        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-          {exercises.map((ex) => (
-            <button
-              key={ex.id}
-              type="button"
-              onClick={() => {
-                if (showLogForm || isPaused) return
-                setPostSaveComparison(null)
-                if (postSaveComparisonTimerRef.current) {
-                  clearTimeout(postSaveComparisonTimerRef.current)
-                  postSaveComparisonTimerRef.current = null
-                }
-                setCurrentExerciseId(ex.id)
-              }}
-              disabled={showLogForm || isPaused}
-              className={cn(
-                "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                (showLogForm || isPaused) && "opacity-50",
-                currentExerciseId === ex.id
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-muted-foreground hover:bg-secondary/80",
-              )}
-            >
-              {ex.name}
-            </button>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="no-scrollbar flex flex-1 gap-1 overflow-x-auto">
+            {(["All", "Push", "Pull", "Legs", "Other"] as const).map((t) => (
+              <Button
+                key={t}
+                type="button"
+                variant={workoutTab === t ? "default" : "secondary"}
+                size="sm"
+                className={cn("h-8 rounded-full px-3 text-xs", workoutTab === t && "bg-primary text-primary-foreground")}
+                onClick={() => setWorkoutTab(t)}
+                disabled={showLogForm || isPaused || showQuickAddExercise}
+              >
+                {t}
+              </Button>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 rounded-full"
+            onClick={() => setShowQuickAddExercise(true)}
+            disabled={showLogForm || isPaused}
+            aria-label="Add exercise"
+          >
+            <Plus className="size-4" />
+          </Button>
+        </div>
+
+        <div className="space-y-2">
+          {groupExercisesForUI(exercises)
+            .filter((g) => (workoutTab === "All" ? true : g.label === workoutTab))
+            .map((group) => (
+            <div key={group.label}>
+              {workoutTab === "All" ? (
+                <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.label}
+                </p>
+              ) : null}
+              <div className="mt-1 flex gap-1.5 overflow-x-auto pb-0.5">
+                {group.items.map((ex) => (
+                  <button
+                    key={ex.id}
+                    type="button"
+                    onClick={() => {
+                      if (showLogForm || isPaused || showQuickAddExercise) return
+                      setPostSaveComparison(null)
+                      if (postSaveComparisonTimerRef.current) {
+                        clearTimeout(postSaveComparisonTimerRef.current)
+                        postSaveComparisonTimerRef.current = null
+                      }
+                      setCurrentExerciseId(ex.id)
+                    }}
+                    disabled={showLogForm || isPaused || showQuickAddExercise}
+                    className={cn(
+                      "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                      (showLogForm || isPaused) && "opacity-50",
+                      currentExerciseId === ex.id
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-secondary text-muted-foreground hover:bg-secondary/80",
+                    )}
+                  >
+                    {ex.name}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </div>
+
+      {showQuickAddExercise && (
+        <div className="absolute inset-0 z-30 flex flex-col bg-background/98 p-4 pt-6">
+          <div className="mx-auto w-full max-w-md rounded-2xl border border-border bg-card p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-base font-semibold text-foreground">Add exercise</h2>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => {
+                  setShowQuickAddExercise(false)
+                  setQuickAddName("")
+                  setQuickAddCategory("Other")
+                  setQuickAddW1("")
+                  setQuickAddW2("")
+                  setQuickAddW3("")
+                }}
+              >
+                Close
+              </Button>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              <div>
+                <Label htmlFor="qa-name" className="text-xs text-muted-foreground">
+                  Name
+                </Label>
+                <Input
+                  id="qa-name"
+                  value={quickAddName}
+                  onChange={(e) => setQuickAddName(e.target.value)}
+                  placeholder="Cable Fly"
+                  className="mt-1 h-11"
+                />
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground">Category</p>
+                <div className="mt-2 grid grid-cols-4 gap-2">
+                  {(["Push", "Pull", "Legs", "Other"] as const).map((c) => (
+                    <Button
+                      key={c}
+                      type="button"
+                      variant={quickAddCategory === c ? "default" : "secondary"}
+                      className={cn("h-10", quickAddCategory === c && "bg-primary text-primary-foreground")}
+                      onClick={() => setQuickAddCategory(c)}
+                    >
+                      {c}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground">Preset weights (kg)</p>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.5"
+                    placeholder="w1"
+                    value={quickAddW1}
+                    onChange={(e) => setQuickAddW1(e.target.value)}
+                    className="h-11 text-center"
+                  />
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.5"
+                    placeholder="w2"
+                    value={quickAddW2}
+                    onChange={(e) => setQuickAddW2(e.target.value)}
+                    className="h-11 text-center"
+                  />
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.5"
+                    placeholder="w3"
+                    value={quickAddW3}
+                    onChange={(e) => setQuickAddW3(e.target.value)}
+                    className="h-11 text-center"
+                  />
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                className="mt-2 h-12 w-full rounded-xl text-base font-semibold"
+                disabled={
+                  !quickAddName.trim() ||
+                  [quickAddW1, quickAddW2, quickAddW3].some(
+                    (s) => !s.trim() || !Number.isFinite(parseFloat(s)) || parseFloat(s) < 0,
+                  )
+                }
+                onClick={() => {
+                  const name = quickAddName.trim()
+                  const w1 = parseFloat(quickAddW1)
+                  const w2 = parseFloat(quickAddW2)
+                  const w3 = parseFloat(quickAddW3)
+                  if (!name || [w1, w2, w3].some((w) => !Number.isFinite(w) || w < 0)) return
+                  const maxOrder = exercises.reduce((m, e) => (typeof e.order === "number" ? Math.max(m, e.order) : m), 0)
+                  const id = newExerciseId()
+                  const category =
+                    quickAddCategory === "Push" || quickAddCategory === "Pull" || quickAddCategory === "Legs"
+                      ? quickAddCategory
+                      : undefined
+                  setExercises((prev) => [
+                    ...prev,
+                    { id, name, category, order: maxOrder + 1, weights: [w1, w2, w3] as [number, number, number] },
+                  ])
+                  setCurrentExerciseId(id)
+                  setShowQuickAddExercise(false)
+                  setQuickAddName("")
+                  setQuickAddCategory("Other")
+                  setQuickAddW1("")
+                  setQuickAddW2("")
+                  setQuickAddW3("")
+                }}
+              >
+                Save exercise
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {currentExercise && lastSessionForCurrentExercise && !showLogForm && (
         <div className="border-b border-border px-4 py-3">

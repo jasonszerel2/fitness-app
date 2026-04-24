@@ -3,6 +3,10 @@ const EXERCISES_KEY = "fitlog-exercises-v1"
 export type StoredExercise = {
   id: string
   name: string
+  /** Optional category used for grouping in UI (local only). */
+  category?: "Push" | "Pull" | "Legs"
+  /** Optional manual order key (lower = earlier). */
+  order?: number
   /** Three preset weights in kg */
   weights: [number, number, number]
 }
@@ -30,6 +34,13 @@ export function loadExercises(): StoredExercise[] {
       .map((e) => ({
         id: e.id,
         name: e.name,
+        category:
+          (e as StoredExercise).category === "Push" ||
+          (e as StoredExercise).category === "Pull" ||
+          (e as StoredExercise).category === "Legs"
+            ? (e as StoredExercise).category
+            : undefined,
+        order: Number.isFinite((e as StoredExercise).order) ? Number((e as StoredExercise).order) : undefined,
         weights: [
           Number(e.weights[0]) || 0,
           Number(e.weights[1]) || 0,
