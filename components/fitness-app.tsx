@@ -1,7 +1,21 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { Play, Square, Check, Settings, ArrowLeft, Trash2, Pause, Pencil, ArrowUp, ArrowDown, Plus } from "lucide-react"
+import {
+  Play,
+  Square,
+  Check,
+  Settings,
+  ArrowLeft,
+  Trash2,
+  Pause,
+  Pencil,
+  ArrowUp,
+  ArrowDown,
+  Plus,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -33,7 +47,7 @@ type Screen =
   | "workoutHistoryDetail"
 
 type StarterLevel = "newbie" | "intermediate" | "charles"
-type ExerciseTab = "All" | "Push" | "Pull" | "Legs" | "Other"
+type ExerciseTab = "All" | "Push" | "Pull" | "Legs"
 
 /** One row in the current session’s log (in-memory, local to this app session) */
 type SessionSetLog = {
@@ -139,9 +153,9 @@ function savedWorkoutExerciseCount(w: SavedWorkout): number {
   return w.byExercise.length
 }
 
-function exerciseCategoryLabel(c: StoredExercise["category"]): "Push" | "Pull" | "Legs" | "Other" {
+function exerciseCategoryLabel(c: StoredExercise["category"]): "Push" | "Pull" | "Legs" | "Unassigned" {
   if (c === "Push" || c === "Pull" || c === "Legs") return c
-  return "Other"
+  return "Unassigned"
 }
 
 function exerciseOrderValue(ex: StoredExercise, fallbackIndex: number) {
@@ -149,7 +163,7 @@ function exerciseOrderValue(ex: StoredExercise, fallbackIndex: number) {
 }
 
 function groupExercisesForUI(exercises: StoredExercise[]) {
-  const order: Array<"Push" | "Pull" | "Legs" | "Other"> = ["Push", "Pull", "Legs", "Other"]
+  const order: Array<"Push" | "Pull" | "Legs" | "Unassigned"> = ["Push", "Pull", "Legs", "Unassigned"]
   const map = new Map<(typeof order)[number], StoredExercise[]>()
   for (const k of order) map.set(k, [])
   for (const [idx, ex] of exercises.entries()) {
@@ -170,7 +184,7 @@ function groupExercisesForUI(exercises: StoredExercise[]) {
 
 function categoryToSelectValue(c: StoredExercise["category"]): ExerciseTab {
   if (c === "Push" || c === "Pull" || c === "Legs") return c
-  return "Other"
+  return "Push"
 }
 
 function starterExercises(level: StarterLevel, newId: () => string): StoredExercise[] {
@@ -181,47 +195,62 @@ function starterExercises(level: StarterLevel, newId: () => string): StoredExerc
     newbie: [
       // Push
       { name: "Bench Press", category: "Push", weights: [20, 30, 40] },
+      { name: "Incline Bench Press", category: "Push", weights: [15, 25, 35] },
       { name: "Shoulder Press", category: "Push", weights: [10, 15, 20] },
       { name: "Dips", category: "Push", weights: [10, 15, 20] },
+      { name: "Tricep Pushdown", category: "Push", weights: [15, 20, 25] },
       // Pull
       { name: "Pull-ups", category: "Pull", weights: [10, 15, 20] },
       { name: "Lat Pulldown", category: "Pull", weights: [30, 40, 50] },
-      { name: "Cable Row", category: "Pull", weights: [25, 35, 45] },
+      { name: "Seated Cable Row", category: "Pull", weights: [25, 35, 45] },
+      { name: "Barbell Row", category: "Pull", weights: [20, 30, 40] },
       { name: "Bicep Curl", category: "Pull", weights: [6, 8, 10] },
       // Legs
       { name: "Squat", category: "Legs", weights: [30, 40, 50] },
-      { name: "Deadlift", category: "Legs", weights: [40, 50, 60] },
       { name: "Leg Press", category: "Legs", weights: [60, 80, 100] },
+      { name: "Romanian Deadlift", category: "Legs", weights: [30, 40, 50] },
+      { name: "Leg Curl", category: "Legs", weights: [15, 20, 25] },
+      { name: "Leg Extension", category: "Legs", weights: [15, 20, 25] },
     ],
     intermediate: [
       // Push
       { name: "Bench Press", category: "Push", weights: [40, 60, 80] },
+      { name: "Incline Bench Press", category: "Push", weights: [30, 45, 60] },
       { name: "Shoulder Press", category: "Push", weights: [20, 25, 30] },
       { name: "Dips", category: "Push", weights: [20, 30, 40] },
+      { name: "Tricep Pushdown", category: "Push", weights: [25, 35, 45] },
       // Pull
       { name: "Pull-ups", category: "Pull", weights: [20, 30, 40] },
       { name: "Lat Pulldown", category: "Pull", weights: [50, 70, 90] },
-      { name: "Cable Row", category: "Pull", weights: [45, 60, 75] },
+      { name: "Seated Cable Row", category: "Pull", weights: [45, 60, 75] },
+      { name: "Barbell Row", category: "Pull", weights: [40, 60, 80] },
       { name: "Bicep Curl", category: "Pull", weights: [8, 10, 14] },
       // Legs
       { name: "Squat", category: "Legs", weights: [60, 80, 100] },
-      { name: "Deadlift", category: "Legs", weights: [80, 100, 120] },
       { name: "Leg Press", category: "Legs", weights: [100, 140, 180] },
+      { name: "Romanian Deadlift", category: "Legs", weights: [60, 80, 100] },
+      { name: "Leg Curl", category: "Legs", weights: [30, 40, 50] },
+      { name: "Leg Extension", category: "Legs", weights: [30, 40, 50] },
     ],
     charles: [
       // Push
       { name: "Bench Press", category: "Push", weights: [80, 100, 120] },
+      { name: "Incline Bench Press", category: "Push", weights: [60, 80, 100] },
       { name: "Shoulder Press", category: "Push", weights: [30, 40, 50] },
       { name: "Dips", category: "Push", weights: [40, 50, 60] },
+      { name: "Tricep Pushdown", category: "Push", weights: [45, 60, 75] },
       // Pull
       { name: "Pull-ups", category: "Pull", weights: [40, 50, 60] },
       { name: "Lat Pulldown", category: "Pull", weights: [80, 100, 120] },
-      { name: "Cable Row", category: "Pull", weights: [70, 90, 110] },
+      { name: "Seated Cable Row", category: "Pull", weights: [70, 90, 110] },
+      { name: "Barbell Row", category: "Pull", weights: [80, 100, 120] },
       { name: "Bicep Curl", category: "Pull", weights: [14, 18, 22] },
       // Legs
       { name: "Squat", category: "Legs", weights: [100, 120, 140] },
-      { name: "Deadlift", category: "Legs", weights: [120, 140, 160] },
       { name: "Leg Press", category: "Legs", weights: [180, 220, 260] },
+      { name: "Romanian Deadlift", category: "Legs", weights: [100, 120, 140] },
+      { name: "Leg Curl", category: "Legs", weights: [50, 70, 90] },
+      { name: "Leg Extension", category: "Legs", weights: [50, 70, 90] },
     ],
   }
   return presets[level].map((e) => ({ id: newId(), name: e.name, category: e.category, weights: e.weights }))
@@ -262,15 +291,22 @@ export function FitnessApp() {
   const [workoutTab, setWorkoutTab] = useState<ExerciseTab>("All")
   const [showQuickAddExercise, setShowQuickAddExercise] = useState(false)
   const [quickAddName, setQuickAddName] = useState("")
-  const [quickAddCategory, setQuickAddCategory] = useState<ExerciseTab>("Other")
+  const [quickAddCategory, setQuickAddCategory] = useState<ExerciseTab>("Push")
   const [quickAddW1, setQuickAddW1] = useState("")
   const [quickAddW2, setQuickAddW2] = useState("")
   const [quickAddW3, setQuickAddW3] = useState("")
+  const [manageExpanded, setManageExpanded] = useState<Record<"Push" | "Pull" | "Legs", boolean>>({
+    Push: true,
+    Pull: true,
+    Legs: true,
+  })
 
   const [sessionId, setSessionId] = useState("")
   const [sessionStartedAt, setSessionStartedAt] = useState("")
 
   const [currentExerciseId, setCurrentExerciseId] = useState<string | null>(null)
+  const [sessionExerciseIds, setSessionExerciseIds] = useState<string[]>([])
+  const [showExercisePicker, setShowExercisePicker] = useState(false)
   const [isSetActive, setIsSetActive] = useState(false)
   const [restTime, setRestTime] = useState(0)
   const [setTime, setSetTime] = useState(0)
@@ -425,6 +461,7 @@ export function FitnessApp() {
   const removeExercise = (id: string) => {
     setExercises((prev) => prev.filter((e) => e.id !== id))
     if (currentExerciseId === id) setCurrentExerciseId(null)
+    setSessionExerciseIds((prev) => prev.filter((x) => x !== id))
   }
 
   const moveExerciseInGroup = (exerciseId: string, dir: -1 | 1) => {
@@ -454,6 +491,8 @@ export function FitnessApp() {
     setSessionId("")
     setSessionStartedAt("")
     setCurrentExerciseId(null)
+    setSessionExerciseIds([])
+    setShowExercisePicker(false)
     setSessionLogs([])
     setPendingAfterStop(null)
     setShowLogForm(false)
@@ -472,6 +511,20 @@ export function FitnessApp() {
     }
   }, [])
 
+  const activateExercise = useCallback(
+    (exerciseId: string) => {
+      setPostSaveComparison(null)
+      if (postSaveComparisonTimerRef.current) {
+        clearTimeout(postSaveComparisonTimerRef.current)
+        postSaveComparisonTimerRef.current = null
+      }
+      setCurrentExerciseId(exerciseId)
+      setSessionExerciseIds((prev) => (prev.includes(exerciseId) ? prev : [...prev, exerciseId]))
+      setShowExercisePicker(false)
+    },
+    [setPostSaveComparison],
+  )
+
   const startWorkout = () => {
     if (exercises.length === 0) return
     const first = exercises[0]
@@ -480,6 +533,8 @@ export function FitnessApp() {
     setSessionId(`sess-${start.getTime()}-${Math.random().toString(36).slice(2, 7)}`)
     setSessionStartedAt(start.toISOString())
     setCurrentExerciseId(first.id)
+    setSessionExerciseIds([first.id])
+    setShowExercisePicker(false)
     setIsPaused(false)
     setScreen("workout")
   }
@@ -1147,6 +1202,8 @@ export function FitnessApp() {
 
   // —— Settings
   if (screen === "settings") {
+    const unassigned = exercises.filter((e) => !e.category)
+    const grouped = groupExercisesForUI(exercises).filter((g) => g.label !== "Unassigned")
     return (
       <div className="flex min-h-screen flex-col bg-background p-4">
         <header className="mb-4 flex items-center gap-2">
@@ -1261,88 +1318,163 @@ export function FitnessApp() {
         </div>
 
         <div className="mx-auto mt-6 w-full max-w-md">
-          <h2 className="mb-2 text-sm font-medium text-muted-foreground">Saved</h2>
+          <h2 className="mb-2 text-sm font-medium text-muted-foreground">Manage exercises</h2>
           {exercises.length === 0 ? (
             <p className="text-sm text-muted-foreground">No exercises yet.</p>
           ) : (
-            <div className="space-y-5">
-              {groupExercisesForUI(exercises).map((group) => (
-                <section key={group.label}>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {group.label}
-                  </h3>
-                  <ul className="space-y-2">
-                    {group.items.map((e, i) => (
+            <div className="space-y-4">
+              {unassigned.length ? (
+                <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unassigned</p>
+                    <p className="text-xs text-muted-foreground">{unassigned.length}</p>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    New exercises start here. Assign Push / Pull / Legs.
+                  </p>
+                  <ul className="mt-3 space-y-2">
+                    {unassigned.map((e) => (
                       <li
                         key={e.id}
-                        className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card/70 px-3 py-2 shadow-sm"
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/60 px-3 py-2"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <p className="font-medium truncate">{e.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {e.weights.map((w) => `${w} kg`).join(" · ")}
-                          </p>
-                          <div className="mt-2">
-                            <Select
-                              value={categoryToSelectValue(e.category)}
-                              onValueChange={(v) => {
-                                const category = v === "Push" || v === "Pull" || v === "Legs" ? v : undefined
-                                setExercises((prev) =>
-                                  prev.map((x) => (x.id === e.id ? { ...x, category } : x)),
-                                )
-                              }}
-                            >
-                              <SelectTrigger size="sm" className="w-full max-w-[10.5rem]">
-                                <SelectValue placeholder="Category" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="Push">Push</SelectItem>
-                                <SelectItem value="Pull">Pull</SelectItem>
-                                <SelectItem value="Legs">Legs</SelectItem>
-                                <SelectItem value="Other">Other</SelectItem>
-                              </SelectContent>
-                            </Select>
+                          <p className="text-xs text-muted-foreground">{e.weights.map((w) => `${w} kg`).join(" · ")}</p>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            {(["Push", "Pull", "Legs"] as const).map((c) => (
+                              <Button
+                                key={c}
+                                type="button"
+                                variant="secondary"
+                                className="h-9"
+                                onClick={() => {
+                                  setExercises((prev) =>
+                                    prev.map((x) => (x.id === e.id ? { ...x, category: c } : x)),
+                                  )
+                                }}
+                              >
+                                {c}
+                              </Button>
+                            ))}
                           </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="text-muted-foreground"
-                            onClick={() => moveExerciseInGroup(e.id, -1)}
-                            aria-label={`Move ${e.name} up`}
-                            disabled={i === 0}
-                          >
-                            <ArrowUp className="size-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="text-muted-foreground"
-                            onClick={() => moveExerciseInGroup(e.id, 1)}
-                            aria-label={`Move ${e.name} down`}
-                            disabled={i === group.items.length - 1}
-                          >
-                            <ArrowDown className="size-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="text-muted-foreground"
-                            onClick={() => removeExercise(e.id)}
-                            aria-label={`Remove ${e.name}`}
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="shrink-0 text-muted-foreground"
+                          onClick={() => removeExercise(e.id)}
+                          aria-label={`Remove ${e.name}`}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
                       </li>
                     ))}
                   </ul>
-                </section>
-              ))}
+                </div>
+              ) : null}
+
+              {(["Push", "Pull", "Legs"] as const).map((cat) => {
+                const group = grouped.find((g) => g.label === cat)
+                const items = group?.items ?? []
+                const open = manageExpanded[cat]
+                return (
+                  <section key={cat} className="rounded-xl border border-border bg-card p-3 shadow-sm">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-2"
+                      onClick={() => setManageExpanded((prev) => ({ ...prev, [cat]: !prev[cat] }))}
+                    >
+                      <div className="flex items-center gap-2">
+                        {open ? (
+                          <ChevronDown className="size-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="size-4 text-muted-foreground" />
+                        )}
+                        <p className="text-sm font-semibold text-foreground">{cat}</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{items.length}</p>
+                    </button>
+
+                    {open ? (
+                      items.length ? (
+                        <ul className="mt-3 space-y-2">
+                          {items.map((e, i) => (
+                            <li
+                              key={e.id}
+                              className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/60 px-3 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium truncate">{e.name}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {e.weights.map((w) => `${w} kg`).join(" · ")}
+                                </p>
+                                <div className="mt-2">
+                                  <Select
+                                    value={categoryToSelectValue(e.category)}
+                                    onValueChange={(v) => {
+                                      const category = v === "Push" || v === "Pull" || v === "Legs" ? v : e.category
+                                      setExercises((prev) =>
+                                        prev.map((x) => (x.id === e.id ? { ...x, category } : x)),
+                                      )
+                                    }}
+                                  >
+                                    <SelectTrigger size="sm" className="w-full max-w-[10.5rem]">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="Push">Push</SelectItem>
+                                      <SelectItem value="Pull">Pull</SelectItem>
+                                      <SelectItem value="Legs">Legs</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-muted-foreground"
+                                  onClick={() => moveExerciseInGroup(e.id, -1)}
+                                  aria-label={`Move ${e.name} up`}
+                                  disabled={i === 0}
+                                >
+                                  <ArrowUp className="size-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-muted-foreground"
+                                  onClick={() => moveExerciseInGroup(e.id, 1)}
+                                  aria-label={`Move ${e.name} down`}
+                                  disabled={i === items.length - 1}
+                                >
+                                  <ArrowDown className="size-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-muted-foreground"
+                                  onClick={() => removeExercise(e.id)}
+                                  aria-label={`Remove ${e.name}`}
+                                >
+                                  <Trash2 className="size-4" />
+                                </Button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-3 text-sm text-muted-foreground">No exercises yet.</p>
+                      )
+                    ) : null}
+                  </section>
+                )
+              })}
             </div>
           )}
         </div>
@@ -1460,10 +1592,52 @@ export function FitnessApp() {
         </Button>
       </div>
 
-      <div className="no-scrollbar border-b border-border px-2 py-2">
+      {/* Quick Switch Bar */}
+      <div className="border-b border-border px-2 py-2">
+        <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto">
+          {sessionExerciseIds
+            .map((id) => exercises.find((e) => e.id === id) ?? null)
+            .filter((x): x is StoredExercise => x != null)
+            .map((ex) => (
+              <Button
+                key={ex.id}
+                type="button"
+                size="sm"
+                variant={currentExerciseId === ex.id ? "default" : "secondary"}
+                className={cn(
+                  "h-8 rounded-full px-3 text-xs",
+                  currentExerciseId === ex.id && "bg-primary text-primary-foreground",
+                )}
+                onClick={() => {
+                  if (showLogForm || isPaused || showQuickAddExercise) return
+                  activateExercise(ex.id)
+                }}
+                disabled={showLogForm || isPaused || showQuickAddExercise}
+              >
+                {ex.name}
+              </Button>
+            ))}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 w-8 rounded-full p-0"
+            onClick={() => {
+              if (showLogForm || isPaused || showQuickAddExercise) return
+              setShowExercisePicker(true)
+            }}
+            disabled={showLogForm || isPaused || showQuickAddExercise}
+            aria-label="Add exercise to session"
+          >
+            <Plus className="size-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className={cn("no-scrollbar border-b border-border px-2 py-2", !showExercisePicker && "hidden")}>
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="no-scrollbar flex flex-1 gap-1 overflow-x-auto">
-            {(["All", "Push", "Pull", "Legs", "Other"] as const).map((t) => (
+            {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
               <Button
                 key={t}
                 type="button"
@@ -1492,12 +1666,15 @@ export function FitnessApp() {
 
         <div className="space-y-2">
           {groupExercisesForUI(exercises)
-            .filter((g) => (workoutTab === "All" ? true : g.label === workoutTab))
+            .filter((g) => {
+              if (workoutTab === "All") return true
+              return g.label === workoutTab
+            })
             .map((group) => (
             <div key={group.label}>
               {workoutTab === "All" ? (
                 <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.label}
+                  {group.label === "Unassigned" ? "Unassigned" : group.label}
                 </p>
               ) : null}
               <div className="mt-1 flex gap-1.5 overflow-x-auto pb-0.5">
@@ -1507,12 +1684,7 @@ export function FitnessApp() {
                     type="button"
                     onClick={() => {
                       if (showLogForm || isPaused || showQuickAddExercise) return
-                      setPostSaveComparison(null)
-                      if (postSaveComparisonTimerRef.current) {
-                        clearTimeout(postSaveComparisonTimerRef.current)
-                        postSaveComparisonTimerRef.current = null
-                      }
-                      setCurrentExerciseId(ex.id)
+                      activateExercise(ex.id)
                     }}
                     disabled={showLogForm || isPaused || showQuickAddExercise}
                     className={cn(
@@ -1545,7 +1717,7 @@ export function FitnessApp() {
                 onClick={() => {
                   setShowQuickAddExercise(false)
                   setQuickAddName("")
-                  setQuickAddCategory("Other")
+                  setQuickAddCategory("Push")
                   setQuickAddW1("")
                   setQuickAddW2("")
                   setQuickAddW3("")
@@ -1571,8 +1743,8 @@ export function FitnessApp() {
 
               <div>
                 <p className="text-xs text-muted-foreground">Category</p>
-                <div className="mt-2 grid grid-cols-4 gap-2">
-                  {(["Push", "Pull", "Legs", "Other"] as const).map((c) => (
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {(["Push", "Pull", "Legs"] as const).map((c) => (
                     <Button
                       key={c}
                       type="button"
@@ -1650,7 +1822,7 @@ export function FitnessApp() {
                   setCurrentExerciseId(id)
                   setShowQuickAddExercise(false)
                   setQuickAddName("")
-                  setQuickAddCategory("Other")
+                  setQuickAddCategory("Push")
                   setQuickAddW1("")
                   setQuickAddW2("")
                   setQuickAddW3("")
