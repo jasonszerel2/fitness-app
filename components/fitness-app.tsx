@@ -327,6 +327,7 @@ export function FitnessApp() {
   const [setTime, setSetTime] = useState(0)
   const setTimeRef = useRef(0)
   const restTimeRef = useRef(0)
+  const wakeLockRef = useRef<any>(null)
 
   const [showLogForm, setShowLogForm] = useState(false)
   const [pendingAfterStop, setPendingAfterStop] = useState<PendingAfterStop | null>(null)
@@ -370,6 +371,53 @@ export function FitnessApp() {
   useEffect(() => {
     restTimeRef.current = restTime
   }, [restTime])
+
+  // Keep screen awake during an active set (best-effort).
+  useEffect(() => {
+    let cancelled = false
+    async function enable() {
+      try {
+        const wl = (navigator as any)?.wakeLock
+        if (!wl?.request) return
+        const sentinel = await wl.request("screen")
+        if (cancelled) {
+          try {
+            await sentinel?.release?.()
+          } catch {
+            // ignore
+          }
+          return
+        }
+        wakeLockRef.current = sentinel
+        sentinel?.addEventListener?.("release", () => {
+          if (wakeLockRef.current === sentinel) wakeLockRef.current = null
+        })
+      } catch {
+        // ignore unsupported / denied
+      }
+    }
+
+    async function disable() {
+      try {
+        await wakeLockRef.current?.release?.()
+      } catch {
+        // ignore
+      } finally {
+        wakeLockRef.current = null
+      }
+    }
+
+    if (isSetActive && screen === "workout" && !isPaused) {
+      enable()
+    } else {
+      disable()
+    }
+
+    return () => {
+      cancelled = true
+      disable()
+    }
+  }, [isSetActive, screen, isPaused])
 
   useEffect(() => {
     setExercises(loadExercises())
@@ -1659,6 +1707,25 @@ export function FitnessApp() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
+      {isSetActive && !isPaused && !showLogForm ? (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black px-5">
+          <p className="mb-6 text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
+          <p className="text-center font-mono text-7xl font-bold tabular-nums text-white sm:text-8xl">
+            {formatTime(setTime)}
+          </p>
+          <div className="mt-10 w-full max-w-xs">
+            <Button
+              type="button"
+              onClick={stopSet}
+              size="lg"
+              className="h-16 w-full rounded-2xl bg-white text-lg font-semibold text-black active:scale-[0.99]"
+            >
+              <Square className="mr-2 size-6" />
+              Stop set
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
         <div className="flex min-w-0 items-center">
           <Button
