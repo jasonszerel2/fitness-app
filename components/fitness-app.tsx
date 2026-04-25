@@ -20,6 +20,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
@@ -83,6 +84,8 @@ type SessionSetLog = {
   setDurationSec: number
   /** Filled when the user presses Start for the *next* set; until then `null` */
   restBeforeNextSetSec: number | null
+  /** Optional note for this set */
+  note?: string
 }
 
 type PendingAfterStop = {
@@ -275,18 +278,42 @@ function syncExercisesPerformedFromGroups(
   return out
 }
 
+function applyNoteToSessionLog(log: SessionSetLog, draft: string): SessionSetLog {
+  const t = draft.trim()
+  if (!t) {
+    const { note: _n, ...rest } = log
+    return rest as SessionSetLog
+  }
+  return { ...log, note: t }
+}
+
 function updateSavedSetFields(
   w: SavedWorkout,
   groupName: string,
   setId: string,
-  patch: Partial<Pick<SavedWorkoutSet, "weight" | "reps">>,
+  patch: Partial<Pick<SavedWorkoutSet, "weight" | "reps" | "note">>,
 ): SavedWorkout {
   return {
     ...w,
     byExercise: w.byExercise.map((g) =>
       g.exerciseName !== groupName
         ? g
-        : { ...g, sets: g.sets.map((s) => (s.id === setId ? { ...s, ...patch } : s)) },
+        : {
+            ...g,
+            sets: g.sets.map((s) => {
+              if (s.id !== setId) return s
+              const merged = { ...s, ...patch } as SavedWorkoutSet
+              if ("note" in patch) {
+                const t = (patch.note ?? "").trim()
+                if (!t) {
+                  const { note: _omit, ...rest } = merged
+                  return rest as SavedWorkoutSet
+                }
+                merged.note = t
+              }
+              return merged
+            }),
+          },
     ),
   }
 }
@@ -519,6 +546,8 @@ export function FitnessApp() {
   const [reps, setReps] = useState("")
   const [showCustomReps, setShowCustomReps] = useState(false)
   const [showLogChangeExerciseSheet, setShowLogChangeExerciseSheet] = useState(false)
+  const [logSetNote, setLogSetNote] = useState("")
+  const [restNoteSheet, setRestNoteSheet] = useState<{ logId: string; draft: string } | null>(null)
 
   const [sessionLogs, setSessionLogs] = useState<SessionSetLog[]>([])
 
@@ -559,9 +588,10 @@ export function FitnessApp() {
     | null
     | {
         log: SessionSetLog
-        phase: "actions" | "weight" | "reps" | "exercise"
+        phase: "actions" | "weight" | "reps" | "exercise" | "note"
         draftW: string
         draftR: string
+        draftNote: string
       }
   >(null)
   const [setEditPickerTab, setSetEditPickerTab] = useState<ExerciseTab>("All")
@@ -570,9 +600,10 @@ export function FitnessApp() {
     | {
         groupName: string
         set: SavedWorkoutSet
-        phase: "actions" | "weight" | "reps" | "exercise"
+        phase: "actions" | "weight" | "reps" | "exercise" | "note"
         draftW: string
         draftR: string
+        draftNote: string
       }
   >(null)
   const [postSaveComparison, setPostSaveComparison] = useState<
@@ -954,6 +985,8 @@ export function FitnessApp() {
     setSelectedWeight(null)
     setCustomWeight("")
     setReps("")
+    setLogSetNote("")
+    setRestNoteSheet(null)
     setIsSetActive(false)
     setIsResting(false)
     setIsPaused(false)
@@ -1126,6 +1159,7 @@ export function FitnessApp() {
     const curVol = weight * repCount
     const isPersonalBest = Number.isFinite(curVol) && curVol > prevBest
 
+    const noteTrim = logSetNote.trim()
     setSessionLogs((prev) => [
       ...prev,
       {
@@ -1139,8 +1173,10 @@ export function FitnessApp() {
         setEndedAt: p.setEndedAt.toISOString(),
         setDurationSec: p.setDurationSec,
         restBeforeNextSetSec: null,
+        ...(noteTrim ? { note: noteTrim } : {}),
       },
     ])
+    setLogSetNote("")
     setPendingAfterStop(null)
     setShowLogForm(false)
 
@@ -1244,6 +1280,7 @@ export function FitnessApp() {
       setShowCustomReps(false)
       const baseReps = getSuggestedRepsForWeight(name, targetW, sessionLogs, savedWorkoutsList)
       setReps(String(baseReps))
+      setLogSetNote("")
     },
     [savedWorkoutsList, sessionLogs],
   )
@@ -1273,6 +1310,7 @@ export function FitnessApp() {
         setEndedAt: l.setEndedAt,
         setDurationSec: l.setDurationSec,
         restBeforeNextSetSec: l.restBeforeNextSetSec,
+        ...(l.note?.trim() ? { note: l.note.trim() } : {}),
       })),
     }))
     const total = Math.max(
@@ -2589,6 +2627,7 @@ export function FitnessApp() {
                           phase: "actions",
                           draftW: String(s.weight),
                           draftR: String(s.reps),
+                          draftNote: s.note ?? "",
                         })
                       }}
                     >
@@ -2602,6 +2641,11 @@ export function FitnessApp() {
                           <span> · Set duration {formatTime(s.setDurationSec)}</span>
                         ) : null}
                       </div>
+                      {s.note?.trim() ? (
+                        <p className="mt-1.5 text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">Note:</span> {s.note.trim()}
+                        </p>
+                      ) : null}
                     </button>
                   </li>
                 ))}
@@ -2656,6 +2700,16 @@ export function FitnessApp() {
                       }}
                     >
                       Change exercise
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11"
+                      onClick={() =>
+                        setHistorySetEditSheet((s) => s && { ...s, phase: "note", draftNote: s.set.note ?? "" })
+                      }
+                    >
+                      Edit note
                     </Button>
                     <Button
                       type="button"
@@ -2752,6 +2806,42 @@ export function FitnessApp() {
                           historySetEditSheet.set.id,
                           { reps: v },
                         )
+                        persistHistoryWorkout(next)
+                        setHistorySetEditSheet(null)
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setHistorySetEditSheet(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              )}
+              {historySetEditSheet.phase === "note" && (
+                <>
+                  <p className="text-sm font-semibold text-foreground">Note</p>
+                  <Textarea
+                    placeholder="Add note…"
+                    value={historySetEditSheet.draftNote}
+                    onChange={(e) => setHistorySetEditSheet((s) => s && { ...s, draftNote: e.target.value })}
+                    rows={3}
+                    className="mt-2 min-h-[5.5rem] resize-none text-sm"
+                  />
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      type="button"
+                      className="flex-1"
+                      onClick={() => {
+                        const t = historySetEditSheet.draftNote.trim()
+                        const next = updateSavedSetFields(w, historySetEditSheet.groupName, historySetEditSheet.set.id, {
+                          note: t || undefined,
+                        })
                         persistHistoryWorkout(next)
                         setHistorySetEditSheet(null)
                       }}
@@ -3333,6 +3423,11 @@ export function FitnessApp() {
                     <div className="mt-1 text-xs text-muted-foreground">
                       Rest: {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
                     </div>
+                    {s.note?.trim() ? (
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">Note:</span> {s.note.trim()}
+                      </p>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -3887,6 +3982,21 @@ export function FitnessApp() {
           </div>
         )}
 
+        {isResting && !showLogForm && !isPaused && sessionLogs.length > 0 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-3 text-muted-foreground underline-offset-2 hover:underline"
+            onClick={() => {
+              const last = sessionLogs[sessionLogs.length - 1]!
+              setRestNoteSheet({ logId: last.id, draft: last.note ?? "" })
+            }}
+          >
+            {sessionLogs[sessionLogs.length - 1]?.note?.trim() ? "Edit note" : "Add note"} (last set)
+          </Button>
+        ) : null}
+
         <div className="mt-8 flex w-full max-w-xs flex-col gap-3 self-center">
           {!isSetActive ? (
             <Button
@@ -3970,6 +4080,7 @@ export function FitnessApp() {
                                 phase: "actions",
                                 draftW: String(log.weight),
                                 draftR: String(log.reps),
+                                draftNote: log.note ?? "",
                               })
                             }}
                           >
@@ -3982,6 +4093,11 @@ export function FitnessApp() {
                                 ? ` · rest before next ${formatTime(log.restBeforeNextSetSec)}`
                                 : " · rest before next — (until you start the next set)"}
                             </div>
+                            {log.note?.trim() ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                <span className="font-medium text-foreground">Note:</span> {log.note.trim()}
+                              </p>
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -4363,6 +4479,19 @@ export function FitnessApp() {
                 )}
               </div>
             </div>
+            <div className="mt-4">
+              <Label htmlFor="log-set-note" className="text-xs text-muted-foreground">
+                Note (optional)
+              </Label>
+              <Textarea
+                id="log-set-note"
+                placeholder="Add note…"
+                value={logSetNote}
+                onChange={(e) => setLogSetNote(e.target.value)}
+                rows={2}
+                className="mt-1 min-h-[4.5rem] resize-none text-sm"
+              />
+            </div>
             <Button
               type="submit"
               size="lg"
@@ -4381,6 +4510,49 @@ export function FitnessApp() {
               Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} ({formatTime(pendingAfterStop.setDurationSec)} work)
             </p>
           </form>
+        </div>
+      )}
+
+      {restNoteSheet && (
+        <div
+          className="fixed inset-0 z-[61] flex flex-col justify-end bg-black/40 p-0 sm:items-center sm:justify-center sm:p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            aria-label="Close"
+            onClick={() => setRestNoteSheet(null)}
+          />
+          <div className="relative z-10 mx-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-4 shadow-xl sm:rounded-2xl">
+            <p className="text-sm font-semibold text-foreground">Set note</p>
+            <Textarea
+              placeholder="Add note…"
+              value={restNoteSheet.draft}
+              onChange={(e) => setRestNoteSheet((s) => (s ? { ...s, draft: e.target.value } : s))}
+              rows={3}
+              className="mt-2 min-h-[5.5rem] resize-none text-sm"
+            />
+            <div className="mt-4 flex gap-2">
+              <Button
+                type="button"
+                className="flex-1"
+                onClick={() => {
+                  const { logId, draft } = restNoteSheet
+                  setSessionLogs((prev) =>
+                    prev.map((l) => (l.id === logId ? applyNoteToSessionLog(l, draft) : l)),
+                  )
+                  setRestNoteSheet(null)
+                }}
+              >
+                Save
+              </Button>
+              <Button type="button" variant="outline" className="flex-1" onClick={() => setRestNoteSheet(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4431,6 +4603,16 @@ export function FitnessApp() {
                     }}
                   >
                     Change exercise
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-11"
+                    onClick={() =>
+                      setSessionSetEditSheet((s) => s && { ...s, phase: "note", draftNote: s.log.note ?? "" })
+                    }
+                  >
+                    Edit note
                   </Button>
                   <Button
                     type="button"
@@ -4509,6 +4691,42 @@ export function FitnessApp() {
                       if (!Number.isFinite(v) || v < 1) return
                       const id = sessionSetEditSheet.log.id
                       setSessionLogs((prev) => prev.map((l) => (l.id === id ? { ...l, reps: v } : l)))
+                      setSessionSetEditSheet(null)
+                    }}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setSessionSetEditSheet(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+            {sessionSetEditSheet.phase === "note" && (
+              <>
+                <p className="text-sm font-semibold text-foreground">Note</p>
+                <Textarea
+                  placeholder="Add note…"
+                  value={sessionSetEditSheet.draftNote}
+                  onChange={(e) => setSessionSetEditSheet((s) => s && { ...s, draftNote: e.target.value })}
+                  rows={3}
+                  className="mt-2 min-h-[5.5rem] resize-none text-sm"
+                />
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    type="button"
+                    className="flex-1"
+                    onClick={() => {
+                      const id = sessionSetEditSheet.log.id
+                      const d = sessionSetEditSheet.draftNote
+                      setSessionLogs((prev) =>
+                        prev.map((l) => (l.id === id ? applyNoteToSessionLog(l, d) : l)),
+                      )
                       setSessionSetEditSheet(null)
                     }}
                   >

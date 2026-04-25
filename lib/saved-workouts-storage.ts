@@ -7,6 +7,8 @@ export type SavedWorkoutSet = {
   setEndedAt: string
   setDurationSec: number
   restBeforeNextSetSec: number | null
+  /** Optional per-set note (bodyweight context, how it felt, etc.) */
+  note?: string
 }
 
 export type SavedWorkoutGroup = {
