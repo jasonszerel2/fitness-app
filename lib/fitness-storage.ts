@@ -15,19 +15,40 @@ export type StoredExercise = {
 function inferCategoryFromName(name: string): StoredExercise["category"] | undefined {
   const n = name.trim().toLowerCase()
   // Push
-  if (n === "bench press") return "Push"
-  if (n === "shoulder press") return "Push"
+  if (n.includes("bench press") || (n.includes("bench") && n.includes("press"))) return "Push"
+  if (n.includes("incline") && (n.includes("bench") || n.includes("press") || n.includes("fly"))) return "Push"
+  if (n.includes("decline") && (n.includes("bench") || n.includes("press"))) return "Push"
+  if (n === "shoulder press" || n.includes("shoulder press") || n.includes("overhead press")) return "Push"
   if (n === "dips" || n === "dip") return "Push"
+  if (n.includes("chest") && (n.includes("press") || n.includes("fly"))) return "Push"
+  if (n.includes("pec deck") || n.includes("pec fly")) return "Push"
+  if (n.includes("push-up") || n.includes("push up") || n.includes("pushup")) return "Push"
   // Pull
   if (n === "pull-ups" || n === "pullups" || n === "pull ups" || n === "pullup") return "Pull"
   if (n === "lat pulldown" || n === "lat pull-down" || n === "lat pull down") return "Pull"
   if (n === "cable row" || n === "seated row") return "Pull"
   if (n === "bicep curl" || n === "biceps curl") return "Pull"
   // Legs
-  if (n === "squat") return "Legs"
-  if (n === "deadlift") return "Legs"
-  if (n === "leg press") return "Legs"
+  if (n === "squat" || n.includes("squat")) return "Legs"
+  if (n === "deadlift" || n.includes("deadlift")) return "Legs"
+  if (n === "leg press" || n.includes("leg press")) return "Legs"
+  if (n.includes("lunge") || n.includes("leg curl") || n.includes("leg extension") || n.includes("calf raise"))
+    return "Legs"
   return undefined
+}
+
+/** Resolve Push/Pull/Legs from saved exercise list or name heuristics (local only). */
+export function resolveWorkoutExerciseCategory(
+  exerciseName: string,
+  exercises: StoredExercise[],
+): "Push" | "Pull" | "Legs" | null {
+  const key = exerciseName.trim().toLowerCase()
+  const ex = exercises.find((e) => e.name.trim().toLowerCase() === key)
+  const fromStore = ex?.category
+  if (fromStore === "Push" || fromStore === "Pull" || fromStore === "Legs") return fromStore
+  const inferred = inferCategoryFromName(exerciseName)
+  if (inferred === "Push" || inferred === "Pull" || inferred === "Legs") return inferred
+  return null
 }
 
 export function loadExercises(): StoredExercise[] {

@@ -28,6 +28,7 @@ import {
   newExerciseId,
   loadStarterLevel,
   saveStarterLevel,
+  resolveWorkoutExerciseCategory,
   type StoredExercise,
 } from "@/lib/fitness-storage"
 import {
@@ -173,6 +174,87 @@ function savedWorkoutTotalSets(w: SavedWorkout): number {
 function savedWorkoutExerciseCount(w: SavedWorkout): number {
   if (w.exercisesPerformed?.length) return w.exercisesPerformed.length
   return w.byExercise.length
+}
+
+function formatWorkoutDurationMinutes(seconds: number): string {
+  const s = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0
+  const m = Math.round(s / 60)
+  if (m <= 0) return "< 1 min"
+  return `${m} min`
+}
+
+const GENERIC_WORKOUT_NAME_RE = /^Workout \d+$/
+
+function nextWorkoutFallbackNumber(existingSaved: SavedWorkout[]): number {
+  let max = 0
+  for (const w of existingSaved) {
+    const m = w.name?.trim().match(/^Workout (\d+)$/)
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return max + 1
+}
+
+/** Chest-biased push movements for “Chest Day” vs “Push Day” when session is push-only. */
+function isChestLikePushExerciseName(name: string): boolean {
+  const n = name.trim().toLowerCase()
+  if (/\bbench\s*press\b/.test(n)) return true
+  if (/incline/.test(n) && /(bench|press|fly)/.test(n)) return true
+  if (/decline/.test(n) && /(bench|press)/.test(n)) return true
+  if (/\bdips?\b/.test(n)) return true
+  if (/chest/.test(n) && /(press|fly|cross)/.test(n)) return true
+  if (/pec\s*(deck|fly)/.test(n)) return true
+  if (/push[\s-]?up/.test(n) || /pushup/.test(n)) return true
+  if (/cable\s+(cross|fly)/.test(n)) return true
+  if (/\b(db|dumbbell)\b.*bench/.test(n)) return true
+  return false
+}
+
+function generateSmartWorkoutName(
+  exerciseOrder: string[],
+  exercises: StoredExercise[],
+  existingSaved: SavedWorkout[],
+): string {
+  if (exerciseOrder.length === 0) {
+    return `Workout ${nextWorkoutFallbackNumber(existingSaved)}`
+  }
+  const cats = exerciseOrder.map((name) => resolveWorkoutExerciseCategory(name, exercises))
+  if (cats.some((c) => c == null)) {
+    return `Workout ${nextWorkoutFallbackNumber(existingSaved)}`
+  }
+  const hasPush = cats.some((c) => c === "Push")
+  const hasPull = cats.some((c) => c === "Pull")
+  const hasLegs = cats.some((c) => c === "Legs")
+
+  if (hasPush && hasPull && hasLegs) return "Full Body"
+  if (hasLegs && (hasPush || hasPull)) return "Mixed Leg Day"
+  if (hasPush && hasPull && !hasLegs) return "Upper Body"
+  if (hasPull && !hasPush && !hasLegs) return "Back Day"
+  if (hasLegs && !hasPush && !hasPull) return "Leg Day"
+  if (hasPush && !hasPull && !hasLegs) {
+    const pushNames = exerciseOrder.filter((_, i) => cats[i] === "Push")
+    const chestLike = pushNames.filter(isChestLikePushExerciseName).length
+    const otherPush = pushNames.length - chestLike
+    if (chestLike > otherPush) return "Chest Day"
+    return "Push Day"
+  }
+  return `Workout ${nextWorkoutFallbackNumber(existingSaved)}`
+}
+
+function isAutoDateWorkoutName(name: string | undefined, sessionEndedAt: string): boolean {
+  const t = name?.trim()
+  if (!t) return true
+  try {
+    return t === formatWorkoutNameDate(sessionEndedAt)
+  } catch {
+    return false
+  }
+}
+
+function savedWorkoutDisplayTitle(w: SavedWorkout): string {
+  const n = w.name?.trim()
+  if (!n) return "Workout"
+  if (isAutoDateWorkoutName(n, w.sessionEndedAt)) return "Workout"
+  return n
 }
 
 function exerciseCategoryLabel(c: StoredExercise["category"]): "Push" | "Pull" | "Legs" | "Unassigned" {
@@ -378,6 +460,13 @@ export function FitnessApp() {
   const [editExW1, setEditExW1] = useState("")
   const [editExW2, setEditExW2] = useState("")
   const [editExW3, setEditExW3] = useState("")
+  const [showProgramAddExerciseSheet, setShowProgramAddExerciseSheet] = useState(false)
+  const [showProgramCreateExercise, setShowProgramCreateExercise] = useState(false)
+  const [progNewExName, setProgNewExName] = useState("")
+  const [progNewExCategory, setProgNewExCategory] = useState<"Push" | "Pull" | "Legs">("Push")
+  const [progNewExW1, setProgNewExW1] = useState("")
+  const [progNewExW2, setProgNewExW2] = useState("")
+  const [progNewExW3, setProgNewExW3] = useState("")
 
   const [exercisesReady, setExercisesReady] = useState(false)
 
@@ -385,6 +474,8 @@ export function FitnessApp() {
   const [programsList, setProgramsList] = useState<Program[]>([])
   const [editingProgram, setEditingProgram] = useState<Program | null>(null)
   const [activeProgram, setActiveProgram] = useState<Program | null>(null)
+  const [lastAddedProgramExerciseId, setLastAddedProgramExerciseId] = useState<string | null>(null)
+  const lastAddedProgramExerciseRef = useRef<HTMLDivElement | null>(null)
   const [historyDetailWorkout, setHistoryDetailWorkout] = useState<SavedWorkout | null>(null)
   const [historyEditingId, setHistoryEditingId] = useState<string | null>(null)
   const [historyDraftName, setHistoryDraftName] = useState("")
@@ -502,6 +593,14 @@ export function FitnessApp() {
       setProgramsList(loadPrograms())
     }
   }, [screen])
+
+  useEffect(() => {
+    if (screen !== "programEditor") return
+    if (!lastAddedProgramExerciseId) return
+    // Scroll to the newly added exercise, then clear.
+    lastAddedProgramExerciseRef.current?.scrollIntoView({ block: "start", behavior: "auto" })
+    setLastAddedProgramExerciseId(null)
+  }, [lastAddedProgramExerciseId, screen])
 
   const sortedSavedWorkouts = useMemo(() => {
     return [...savedWorkoutsList].sort(
@@ -751,6 +850,8 @@ export function FitnessApp() {
 
   const startWorkout = () => {
     if (exercises.length === 0) return
+    const progs = loadPrograms()
+    setProgramsList(progs)
     const start = new Date()
     resetWorkoutSession()
     setSessionId(`sess-${start.getTime()}-${Math.random().toString(36).slice(2, 7)}`)
@@ -759,7 +860,7 @@ export function FitnessApp() {
     setSessionExerciseIds([])
     setShowSwitchSheet(false)
     setIsPaused(false)
-    setScreen("chooseWorkoutMode")
+    setScreen(progs.length === 0 ? "chooseFirstExercise" : "chooseWorkoutMode")
   }
 
   /** Settings only: does not clear an in-progress workout (none reachable from here today) */
@@ -1041,9 +1142,11 @@ export function FitnessApp() {
       0,
       Math.round((ended.getTime() - new Date(sessionStartedAt).getTime()) / 1000),
     )
+    const existingBeforeSave = loadSavedWorkouts()
+    const smartName = generateSmartWorkoutName(order, exercises, existingBeforeSave)
     const saved: SavedWorkout = {
       id: newSavedWorkoutId(),
-      name: formatWorkoutNameDate(ended.toISOString()),
+      name: smartName,
       sessionId: sessionId || "session",
       sessionStartedAt,
       sessionEndedAt: ended.toISOString(),
@@ -1056,7 +1159,7 @@ export function FitnessApp() {
     resetWorkoutSession()
     setIsPaused(false)
     setScreen("workoutSummary")
-  }, [sessionLogs, sessionId, sessionStartedAt, resetWorkoutSession, showLogForm])
+  }, [sessionLogs, sessionId, sessionStartedAt, resetWorkoutSession, showLogForm, exercises])
 
   const suggestWorkoutName = useCallback((w: SavedWorkout): string | null => {
     const sig = [...(w.exercisesPerformed ?? [])].slice().sort().join("|")
@@ -1066,7 +1169,10 @@ export function FitnessApp() {
       const otherSig = [...(other.exercisesPerformed ?? [])].slice().sort().join("|")
       if (otherSig !== sig) continue
       const n = other.name?.trim()
-      if (n && n !== formatWorkoutNameDate(other.sessionEndedAt)) return n
+      if (!n) continue
+      if (isAutoDateWorkoutName(n, other.sessionEndedAt)) continue
+      if (GENERIC_WORKOUT_NAME_RE.test(n)) continue
+      return n
     }
     return null
   }, [sortedSavedWorkouts])
@@ -1282,6 +1388,239 @@ export function FitnessApp() {
         </header>
 
         <div className="mx-auto w-full max-w-md space-y-4 pb-8">
+          {showProgramAddExerciseSheet && (
+            <div className="absolute inset-0 z-50 flex flex-col justify-end bg-black/30 p-0">
+              <button
+                type="button"
+                className="absolute inset-0 cursor-default"
+                aria-label="Close add exercise"
+                onClick={() => setShowProgramAddExerciseSheet(false)}
+              />
+              <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-foreground">Add exercise</h2>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => setShowProgramAddExerciseSheet(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  <Button
+                    type="button"
+                    className="h-12 w-full rounded-xl text-base font-semibold"
+                    onClick={() => {
+                      setShowProgramCreateExercise(true)
+                      setProgNewExName("")
+                      setProgNewExCategory("Push")
+                      setProgNewExW1("")
+                      setProgNewExW2("")
+                      setProgNewExW3("")
+                    }}
+                  >
+                    <Plus className="mr-2 size-5" />
+                    Create New Exercise
+                  </Button>
+                </div>
+
+                <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1">
+                  <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Existing
+                  </p>
+                  <div className="space-y-2">
+                    {exercises.map((ex) => (
+                      <Button
+                        key={ex.id}
+                        type="button"
+                        variant="secondary"
+                        className="h-12 w-full justify-between rounded-xl px-4"
+                        onClick={() => {
+                          const newId = newProgramItemId()
+                          setEditingProgram({
+                            ...p,
+                            exercises: [
+                              ...p.exercises,
+                              {
+                                id: newId,
+                                exerciseId: ex.id,
+                                exerciseName: ex.name,
+                                sets: [
+                                  { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                                  { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                                  { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                                ],
+                              },
+                            ],
+                          })
+                          setLastAddedProgramExerciseId(newId)
+                          setShowProgramAddExerciseSheet(false)
+                        }}
+                      >
+                        <span className="font-semibold">{ex.name}</span>
+                        <span className="text-xs text-muted-foreground">{ex.category ?? "Unassigned"}</span>
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showProgramCreateExercise && (
+            <div className="absolute inset-0 z-50 flex flex-col justify-end bg-black/30 p-0">
+              <button
+                type="button"
+                className="absolute inset-0 cursor-default"
+                aria-label="Close create exercise"
+                onClick={() => setShowProgramCreateExercise(false)}
+              />
+              <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-foreground">Create exercise</h2>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => setShowProgramCreateExercise(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground" htmlFor="prog-new-ex-name">
+                      Name
+                    </Label>
+                    <Input
+                      id="prog-new-ex-name"
+                      className="mt-1 h-11"
+                      value={progNewExName}
+                      onChange={(e) => setProgNewExName(e.target.value)}
+                      placeholder="Cable Fly"
+                    />
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted-foreground">Category</p>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      {(["Push", "Pull", "Legs"] as const).map((c) => (
+                        <Button
+                          key={c}
+                          type="button"
+                          variant={progNewExCategory === c ? "default" : "secondary"}
+                          className={cn("h-10", progNewExCategory === c && "bg-primary text-primary-foreground")}
+                          onClick={() => setProgNewExCategory(c)}
+                        >
+                          {c}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted-foreground">Preset weights (kg)</p>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.5"
+                        placeholder="w1"
+                        className="h-11 text-center"
+                        value={progNewExW1}
+                        onChange={(e) => setProgNewExW1(e.target.value)}
+                      />
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.5"
+                        placeholder="w2"
+                        className="h-11 text-center"
+                        value={progNewExW2}
+                        onChange={(e) => setProgNewExW2(e.target.value)}
+                      />
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.5"
+                        placeholder="w3"
+                        className="h-11 text-center"
+                        value={progNewExW3}
+                        onChange={(e) => setProgNewExW3(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    className="h-12 w-full rounded-xl text-base font-semibold"
+                    disabled={
+                      !progNewExName.trim() ||
+                      [progNewExW1, progNewExW2, progNewExW3].some(
+                        (s) => !s.trim() || !Number.isFinite(parseFloat(s)) || parseFloat(s) < 0,
+                      )
+                    }
+                    onClick={() => {
+                      const name = progNewExName.trim()
+                      const w1 = parseFloat(progNewExW1)
+                      const w2 = parseFloat(progNewExW2)
+                      const w3 = parseFloat(progNewExW3)
+                      if (!name || [w1, w2, w3].some((w) => !Number.isFinite(w) || w < 0)) return
+
+                      const newExId = newExerciseId()
+                      const maxOrder = exercises.reduce(
+                        (m, e) => (typeof e.order === "number" ? Math.max(m, e.order) : m),
+                        0,
+                      )
+                      setExercises((prev) => [
+                        ...prev,
+                        {
+                          id: newExId,
+                          name,
+                          category: progNewExCategory,
+                          order: maxOrder + 1,
+                          weights: [w1, w2, w3] as [number, number, number],
+                        },
+                      ])
+
+                      const newProgExId = newProgramItemId()
+                      setEditingProgram({
+                        ...p,
+                        exercises: [
+                          ...p.exercises,
+                          {
+                            id: newProgExId,
+                            exerciseId: newExId,
+                            exerciseName: name,
+                            sets: [
+                              { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                              { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                              { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                            ],
+                          },
+                        ],
+                      })
+                      setLastAddedProgramExerciseId(newProgExId)
+                      setShowProgramCreateExercise(false)
+                      setShowProgramAddExerciseSheet(false)
+                    }}
+                  >
+                    Save exercise
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <Label htmlFor="prog-name" className="text-xs text-muted-foreground">
               Program name
@@ -1302,24 +1641,7 @@ export function FitnessApp() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  if (exercises.length === 0) return
-                  const ex = exercises[0]
-                  setEditingProgram({
-                    ...p,
-                    exercises: [
-                      ...p.exercises,
-                      {
-                        id: newProgramItemId(),
-                        exerciseId: ex.id,
-                        exerciseName: ex.name,
-                        sets: [
-                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
-                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
-                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
-                        ],
-                      },
-                    ],
-                  })
+                  setShowProgramAddExerciseSheet(true)
                 }}
               >
                 <Plus className="mr-1 size-4" />
@@ -1336,7 +1658,11 @@ export function FitnessApp() {
                   const name = ex?.name ?? pe.exerciseName
                   const done = 0
                   return (
-                    <div key={pe.id} className="rounded-xl border border-border bg-background/60 p-3">
+                    <div
+                      key={pe.id}
+                      ref={pe.id === lastAddedProgramExerciseId ? lastAddedProgramExerciseRef : undefined}
+                      className="rounded-xl border border-border bg-background/60 p-3"
+                    >
                       <div className="flex items-start justify-between gap-2">
                         <p className="font-semibold text-foreground">
                           {idx + 1}. {name}
@@ -1538,6 +1864,20 @@ export function FitnessApp() {
                 })}
               </div>
             )}
+
+            {p.exercises.length > 0 ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="mt-4 h-11 w-full rounded-xl"
+                onClick={() => {
+                  setShowProgramAddExerciseSheet(true)
+                }}
+              >
+                <Plus className="mr-2 size-4" />
+                Add exercise
+              </Button>
+            ) : null}
           </div>
 
           <Button
@@ -1796,11 +2136,18 @@ export function FitnessApp() {
                           }}
                           className="w-full text-left"
                         >
-                          <p className="font-medium text-foreground truncate">
-                            {w.name?.trim() ? w.name : formatSessionDate(w.sessionEndedAt)}
+                          <p className="text-base font-semibold text-foreground truncate">
+                            {savedWorkoutDisplayTitle(w)}
                           </p>
-                          <p className="mt-1.5 text-sm text-muted-foreground">
-                            <span>{formatTime(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)} total</span>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {formatSessionDate(w.sessionEndedAt)}
+                          </p>
+                          <p className="mt-0.5 text-sm text-muted-foreground">
+                            <span>
+                              {formatWorkoutDurationMinutes(
+                                Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0,
+                              )}
+                            </span>
                             <span className="mx-1.5">·</span>
                             <span>{savedWorkoutExerciseCount(w)} exercises</span>
                             <span className="mx-1.5">·</span>
@@ -1903,7 +2250,7 @@ export function FitnessApp() {
                 value={historyDraftName}
                 onChange={(e) => setHistoryDraftName(e.target.value)}
                 className="h-10"
-                placeholder={formatSessionDate(w.sessionEndedAt)}
+                placeholder="Workout name"
               />
               <div className="flex gap-2 flex-wrap">
                 {(() => {
@@ -1948,10 +2295,14 @@ export function FitnessApp() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="min-w-0 font-medium text-foreground truncate">
-                {w.name?.trim() ? w.name : formatSessionDate(w.sessionEndedAt)}
-              </p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <p className="text-lg font-semibold text-foreground truncate">{savedWorkoutDisplayTitle(w)}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{formatSessionDate(w.sessionEndedAt)}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+                </p>
+              </div>
               <div className="flex shrink-0 gap-1">
                 <Button
                   type="button"
@@ -1995,8 +2346,8 @@ export function FitnessApp() {
             <span className="text-foreground/80">Ended</span> {formatSessionDate(w.sessionEndedAt)}
           </p>
           <p>
-            <span className="text-foreground/80">Total</span>{" "}
-            {formatTime(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+            <span className="text-foreground/80">Duration</span>{" "}
+            {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
           </p>
         </div>
         <div className="mx-auto mt-6 w-full max-w-md flex-1 space-y-6 overflow-y-auto pb-8">
@@ -2412,8 +2763,12 @@ export function FitnessApp() {
     const w = summaryWorkout
     return (
       <div className="flex min-h-screen flex-col bg-background p-4">
-        <h1 className="text-xl font-semibold text-foreground">{w.name?.trim() ? w.name : formatWorkoutNameDate(w.sessionEndedAt)}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Workout saved on this device.</p>
+        <h1 className="text-xl font-semibold text-foreground">{savedWorkoutDisplayTitle(w)}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {formatSessionDate(w.sessionEndedAt)} ·{" "}
+          {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+        </p>
+        <p className="mt-0.5 text-sm text-muted-foreground">Workout saved on this device.</p>
         <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-border bg-card p-4 text-sm shadow-sm">
           <div>
             <p className="text-xs text-muted-foreground">Ended</p>
@@ -2421,7 +2776,9 @@ export function FitnessApp() {
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Duration</p>
-            <p className="font-medium">{formatTime(w.totalDurationSec)}</p>
+            <p className="font-medium">
+              {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+            </p>
           </div>
           <div className="col-span-2">
             <p className="text-xs text-muted-foreground">Exercises</p>
