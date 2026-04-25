@@ -3368,21 +3368,30 @@ export function FitnessApp() {
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
       {isSetActive && !isPaused && !showLogForm ? (
-        <div className="absolute inset-0 z-50 bg-black px-5">
-          <div className="absolute left-0 right-0 top-10 flex flex-col items-center">
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-black text-white"
+          style={{
+            minHeight: "100dvh",
+            paddingTop: "env(safe-area-inset-top, 0px)",
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            paddingLeft: "env(safe-area-inset-left, 0px)",
+            paddingRight: "env(safe-area-inset-right, 0px)",
+          }}
+        >
+          <div className="flex shrink-0 flex-col items-center px-5 pt-2">
             <p className="text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
             <p className="mt-3 text-center text-lg font-semibold text-white/90">
               {currentExercise?.name ?? "Exercise"}
             </p>
           </div>
 
-          <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5">
             <p className="text-center font-mono text-7xl font-bold tabular-nums text-white sm:text-8xl">
               {formatTime(setTime)}
             </p>
           </div>
 
-          <div className="absolute bottom-10 left-0 right-0 mx-auto w-full max-w-xs px-5">
+          <div className="mx-auto w-full max-w-xs shrink-0 px-5 pb-2">
             <Button
               type="button"
               onClick={stopSet}

@@ -1,19 +1,37 @@
-import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
-import './globals.css'
+import type { Metadata, Viewport } from "next"
+import { Geist, Geist_Mono } from "next/font/google"
+import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 
-const _geist = Geist({ subsets: ["latin"] });
-const _geistMono = Geist_Mono({ subsets: ["latin"] });
+const _geist = Geist({ subsets: ["latin"] })
+const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
-export const metadata = {
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#000000",
+}
+
+export const metadata: Metadata = {
   title: "Setra",
   description: "Train with intent",
+  applicationName: "Setra",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    title: "Setra",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: { telephone: false },
   icons: {
     icon: "/icon.png",
     apple: "/apple-icon.png",
   },
-};
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
+}
 
 export default function RootLayout({
   children,
