@@ -503,6 +503,76 @@ function WorkoutPauseOverlay({
   )
 }
 
+const ONBOARD_STORAGE_PREFIX = "fitlog-onboard-v1:"
+
+function isOnboardingHintDismissed(key: string): boolean {
+  if (typeof window === "undefined") return true
+  try {
+    return window.localStorage.getItem(ONBOARD_STORAGE_PREFIX + key) === "1"
+  } catch {
+    return true
+  }
+}
+
+function dismissOnboardingHint(key: string) {
+  try {
+    window.localStorage.setItem(ONBOARD_STORAGE_PREFIX + key, "1")
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function OnboardingHint({
+  hintKey,
+  text,
+  className,
+  autoHideMs,
+  tone = "default",
+}: {
+  hintKey: string
+  text: string
+  className?: string
+  autoHideMs?: number
+  tone?: "default" | "onDark"
+}) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    setVisible(!isOnboardingHintDismissed(hintKey))
+  }, [hintKey])
+  const close = useCallback(() => {
+    dismissOnboardingHint(hintKey)
+    setVisible(false)
+  }, [hintKey])
+  useEffect(() => {
+    if (!visible || autoHideMs == null || autoHideMs <= 0) return
+    const id = window.setTimeout(close, autoHideMs)
+    return () => window.clearTimeout(id)
+  }, [visible, autoHideMs, close])
+  if (!visible) return null
+  const pillTone =
+    tone === "onDark"
+      ? "border-white/25 bg-black/55 text-white shadow-lg backdrop-blur-sm ring-1 ring-white/10"
+      : "border-border bg-card text-card-foreground shadow-md ring-1 ring-black/5 dark:ring-white/10"
+  return (
+    <div className={cn("pointer-events-none", className)}>
+      <button
+        type="button"
+        onClick={close}
+        aria-label="Dismiss tip"
+        className={cn(
+          "pointer-events-auto flex max-w-[min(92vw,280px)] items-start gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-xs leading-snug",
+          pillTone,
+        )}
+      >
+        <span className="min-w-0 flex-1">{text}</span>
+        <span className="shrink-0 opacity-70" aria-hidden>
+          ×
+        </span>
+      </button>
+    </div>
+  )
+}
+
 export function FitnessApp() {
   const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
@@ -3475,7 +3545,14 @@ export function FitnessApp() {
         >
           <div className="flex shrink-0 flex-col items-center px-5 pt-2">
             <p className="text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
-            <p className="mt-3 text-center text-lg font-semibold text-white/90">
+            <OnboardingHint
+              hintKey="inset-timer"
+              text="Timer runs while you train"
+              tone="onDark"
+              autoHideMs={4200}
+              className="mt-2 flex justify-center"
+            />
+            <p className="mt-2 text-center text-lg font-semibold text-white/90">
               {currentExercise?.name ?? "Exercise"}
             </p>
           </div>
@@ -3535,12 +3612,19 @@ export function FitnessApp() {
       <div className="border-b border-border px-4 py-3">
         <div className="mx-auto w-full max-w-md">
           {activeProgram ? (
-            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-3 text-sm shadow-sm">
-              <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Program
-                </span>
-                <span className="truncate text-right text-xs font-medium text-foreground">{activeProgram.name}</span>
+            <div className="relative mb-3 rounded-xl border border-border bg-card px-3 py-3 text-sm shadow-sm">
+              <div className="relative">
+                <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Program
+                  </span>
+                  <span className="truncate text-right text-xs font-medium text-foreground">{activeProgram.name}</span>
+                </div>
+                <OnboardingHint
+                  hintKey="program-follow-set"
+                  text="Follow planned sets or adjust freely"
+                  className="absolute left-0 right-0 top-full z-10 mt-1 flex justify-center px-0"
+                />
               </div>
 
               {programProgress?.currentPlanned ? (
@@ -4198,6 +4282,7 @@ export function FitnessApp() {
             </div>
           )}
 
+          <div className="relative flex min-h-0 flex-1 flex-col">
           <div className="mb-4 flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
               <span className="text-sm text-muted-foreground">
@@ -4220,7 +4305,7 @@ export function FitnessApp() {
           </div>
           <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
           <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
-          <div className="mb-3 flex justify-center">
+          <div className="relative z-[25] mb-3 flex justify-center">
             <Button
               type="button"
               variant="secondary"
@@ -4231,6 +4316,11 @@ export function FitnessApp() {
             >
               Change exercise
             </Button>
+            <OnboardingHint
+              hintKey="log-change-exercise"
+              text="Switch exercises anytime"
+              className="absolute left-1/2 top-full z-[25] mt-1 flex -translate-x-1/2 justify-center"
+            />
           </div>
           <div className="mb-4 space-y-2 text-sm text-muted-foreground">
             <p className="text-center">
@@ -4298,7 +4388,12 @@ export function FitnessApp() {
               saveSet()
             }}
           >
-            <div className="mb-4">
+            <div className="relative z-[25] mb-4">
+              <OnboardingHint
+                hintKey="log-reps-weight"
+                text="Tap + / – to adjust quickly"
+                className="absolute right-0 bottom-full z-[25] mb-1 flex justify-end"
+              />
               <span className="mb-2 block text-sm font-medium text-muted-foreground">Weight</span>
               <div className="grid grid-cols-3 gap-2">
                 {logExercise.weights.map((w, i) => (
@@ -4393,7 +4488,6 @@ export function FitnessApp() {
                   +
                 </Button>
               </div>
-            </div>
             <div className="mb-2">
               <span className="text-sm font-medium text-muted-foreground">Reps</span>
               <div className="mt-2 flex items-center justify-center gap-2">
@@ -4479,7 +4573,13 @@ export function FitnessApp() {
                 )}
               </div>
             </div>
-            <div className="mt-4">
+            </div>
+            <div className="relative z-[25] mt-4">
+              <OnboardingHint
+                hintKey="log-notes"
+                text="Add notes to remember how a set felt"
+                className="absolute left-0 right-0 bottom-full z-[25] mb-1 flex justify-center"
+              />
               <Label htmlFor="log-set-note" className="text-xs text-muted-foreground">
                 Note (optional)
               </Label>
@@ -4492,24 +4592,32 @@ export function FitnessApp() {
                 className="mt-1 min-h-[4.5rem] resize-none text-sm"
               />
             </div>
-            <Button
-              type="submit"
-              size="lg"
-              className="mt-4 h-12 w-full rounded-xl text-base font-semibold"
-              disabled={
-                (selectedWeight == null && !customWeight.trim()) ||
-                !reps.trim() ||
-                !Number.isFinite(parseInt(reps, 10)) ||
-                parseInt(reps, 10) < 1
-              }
-            >
-              <Check className="mr-2 size-5" />
-              Save set
-            </Button>
+            <div className="relative z-[25] mt-4">
+              <OnboardingHint
+                hintKey="log-save-set"
+                text="Save your set here"
+                className="absolute left-0 right-0 bottom-full z-[25] mb-1 flex justify-center"
+              />
+              <Button
+                type="submit"
+                size="lg"
+                className="h-12 w-full rounded-xl text-base font-semibold"
+                disabled={
+                  (selectedWeight == null && !customWeight.trim()) ||
+                  !reps.trim() ||
+                  !Number.isFinite(parseInt(reps, 10)) ||
+                  parseInt(reps, 10) < 1
+                }
+              >
+                <Check className="mr-2 size-5" />
+                Save set
+              </Button>
+            </div>
             <p className="mt-3 text-center text-xs text-muted-foreground">
               Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} ({formatTime(pendingAfterStop.setDurationSec)} work)
             </p>
           </form>
+          </div>
         </div>
       )}
 
