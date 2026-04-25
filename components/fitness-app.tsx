@@ -536,12 +536,28 @@ export function FitnessApp() {
     for (const l of sessionLogs) {
       setsByExerciseId.set(l.exerciseId, (setsByExerciseId.get(l.exerciseId) ?? 0) + 1)
     }
-    const next = activeProgram.items.find((it) => {
-      const done = setsByExerciseId.get(it.exerciseId) ?? 0
-      return done < it.targetSets
+    const nextExercise = activeProgram.exercises.find((ex) => {
+      const done = setsByExerciseId.get(ex.exerciseId) ?? 0
+      return done < ex.sets.length
     })
-    return { setsByExerciseId, next }
-  }, [activeProgram, sessionLogs])
+    const nextSet =
+      nextExercise != null ? nextExercise.sets[setsByExerciseId.get(nextExercise.exerciseId) ?? 0] ?? null : null
+    const currentPlanned = currentExerciseId
+      ? activeProgram.exercises.find((ex) => ex.exerciseId === currentExerciseId) ?? null
+      : null
+    const currentDone = currentPlanned ? setsByExerciseId.get(currentPlanned.exerciseId) ?? 0 : 0
+    const currentNextSet =
+      currentPlanned != null ? currentPlanned.sets[currentDone] ?? null : null
+
+    return {
+      setsByExerciseId,
+      nextExercise,
+      nextSet,
+      currentPlanned,
+      currentDone,
+      currentNextSet,
+    }
+  }, [activeProgram, sessionLogs, currentExerciseId])
 
   const lastSessionForCurrentExercise = useMemo(() => {
     if (!currentExercise) return null
@@ -836,6 +852,13 @@ export function FitnessApp() {
     if (!Number.isFinite(repCount) || repCount <= 0) return
 
     const p = pendingAfterStop
+    const plannedForThisSet = (() => {
+      if (!activeProgram) return null
+      const progEx = activeProgram.exercises.find((ex) => ex.exerciseId === p.exerciseId) ?? null
+      if (!progEx) return null
+      const setIndex0 = sessionLogs.filter((l) => l.exerciseId === p.exerciseId).length
+      return progEx.sets[setIndex0] ?? null
+    })()
     const setIndex0 = sessionLogs.filter((l) => l.exerciseName === p.exerciseName).length
     const lastSess = findLastExerciseSession(savedWorkoutsList, p.exerciseName)
     const prevMatching = lastSess?.sets[setIndex0]
@@ -883,7 +906,15 @@ export function FitnessApp() {
     setPendingAfterStop(null)
     setShowLogForm(false)
 
-    setPostSaveComparison({ text: comparison, tone, isPersonalBest })
+    const plannedLine =
+      plannedForThisSet && (plannedForThisSet.targetWeight != null || plannedForThisSet.targetReps != null)
+        ? `Planned: ${plannedForThisSet.targetWeight != null ? `${plannedForThisSet.targetWeight} kg` : "— kg"} × ${plannedForThisSet.targetReps != null ? `${plannedForThisSet.targetReps} reps` : "— reps"}`
+        : null
+    setPostSaveComparison({
+      text: plannedLine ? `${comparison} · ${plannedLine}` : comparison,
+      tone,
+      isPersonalBest,
+    })
     if (postSaveComparisonTimerRef.current) clearTimeout(postSaveComparisonTimerRef.current)
     postSaveComparisonTimerRef.current = setTimeout(() => {
       setPostSaveComparison(null)
@@ -1166,7 +1197,7 @@ export function FitnessApp() {
                 name: "New program",
                 createdAt: now,
                 updatedAt: now,
-                items: [],
+                exercises: [],
               }
               setEditingProgram(p)
               setScreen("programEditor")
@@ -1186,7 +1217,7 @@ export function FitnessApp() {
                     <div className="min-w-0">
                       <p className="font-semibold text-foreground truncate">{p.name}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {p.items.length} exercise{p.items.length === 1 ? "" : "s"}
+                        {p.exercises.length} exercise{p.exercises.length === 1 ? "" : "s"}
                       </p>
                     </div>
                     <div className="flex shrink-0 gap-1">
@@ -1275,15 +1306,17 @@ export function FitnessApp() {
                   const ex = exercises[0]
                   setEditingProgram({
                     ...p,
-                    items: [
-                      ...p.items,
+                    exercises: [
+                      ...p.exercises,
                       {
                         id: newProgramItemId(),
                         exerciseId: ex.id,
                         exerciseName: ex.name,
-                        targetSets: 3,
-                        targetReps: 10,
-                        targetWeight: null,
+                        sets: [
+                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                          { id: newProgramItemId(), targetWeight: null, targetReps: null },
+                        ],
                       },
                     ],
                   })
@@ -1294,87 +1327,211 @@ export function FitnessApp() {
               </Button>
             </div>
 
-            {p.items.length === 0 ? (
+            {p.exercises.length === 0 ? (
               <p className="mt-3 text-sm text-muted-foreground">Add exercises to plan your session.</p>
             ) : (
               <div className="mt-3 space-y-3">
-                {p.items.map((it, idx) => {
-                  const ex = exercises.find((e) => e.id === it.exerciseId) ?? null
-                  const name = ex?.name ?? it.exerciseName
+                {p.exercises.map((pe, idx) => {
+                  const ex = exercises.find((e) => e.id === pe.exerciseId) ?? null
+                  const name = ex?.name ?? pe.exerciseName
+                  const done = 0
                   return (
-                    <div key={it.id} className="rounded-xl border border-border bg-background/60 p-3">
+                    <div key={pe.id} className="rounded-xl border border-border bg-background/60 p-3">
                       <div className="flex items-start justify-between gap-2">
                         <p className="font-semibold text-foreground">
                           {idx + 1}. {name}
                         </p>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground"
-                          onClick={() =>
-                            setEditingProgram({ ...p, items: p.items.filter((x) => x.id !== it.id) })
-                          }
-                          aria-label="Remove exercise from program"
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => {
+                              if (idx === 0) return
+                              const next = [...p.exercises]
+                              ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
+                              setEditingProgram({ ...p, exercises: next })
+                            }}
+                            aria-label="Move exercise up"
+                            disabled={idx === 0}
+                          >
+                            <ArrowUp className="size-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => {
+                              if (idx === p.exercises.length - 1) return
+                              const next = [...p.exercises]
+                              ;[next[idx + 1], next[idx]] = [next[idx], next[idx + 1]]
+                              setEditingProgram({ ...p, exercises: next })
+                            }}
+                            aria-label="Move exercise down"
+                            disabled={idx === p.exercises.length - 1}
+                          >
+                            <ArrowDown className="size-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground"
+                            onClick={() => setEditingProgram({ ...p, exercises: p.exercises.filter((x) => x.id !== pe.id) })}
+                            aria-label="Remove exercise from program"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Target sets</Label>
-                          <Input
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            className="mt-1 h-10"
-                            value={String(it.targetSets)}
-                            onChange={(e) => {
-                              const v = Math.max(1, parseInt(e.target.value || "0", 10) || 1)
+                      <div className="mt-3">
+                        <Label className="text-xs text-muted-foreground">Exercise</Label>
+                        <Select
+                          value={pe.exerciseId}
+                          onValueChange={(id) => {
+                            const ex2 = exercises.find((e) => e.id === id)
+                            setEditingProgram({
+                              ...p,
+                              exercises: p.exercises.map((x) =>
+                                x.id === pe.id ? { ...x, exerciseId: id, exerciseName: ex2?.name ?? x.exerciseName } : x,
+                              ),
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="mt-1 w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {exercises.map((e) => (
+                              <SelectItem key={e.id} value={e.id}>
+                                {e.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Planned sets</p>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
                               setEditingProgram({
                                 ...p,
-                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetSets: v } : x)),
+                                exercises: p.exercises.map((x) =>
+                                  x.id === pe.id
+                                    ? {
+                                        ...x,
+                                        sets: [...x.sets, { id: newProgramItemId(), targetWeight: null, targetReps: null }],
+                                      }
+                                    : x,
+                                ),
                               })
                             }}
-                          />
+                          >
+                            <Plus className="mr-1 size-4" />
+                            Add set
+                          </Button>
                         </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Target reps</Label>
-                          <Input
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            className="mt-1 h-10"
-                            value={String(it.targetReps)}
-                            onChange={(e) => {
-                              const v = Math.max(1, parseInt(e.target.value || "0", 10) || 1)
-                              setEditingProgram({
-                                ...p,
-                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetReps: v } : x)),
-                              })
-                            }}
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <Label className="text-xs text-muted-foreground">Target weight (optional kg)</Label>
-                          <Input
-                            type="number"
-                            inputMode="decimal"
-                            min={0}
-                            step="0.5"
-                            className="mt-1 h-10"
-                            value={it.targetWeight == null ? "" : String(it.targetWeight)}
-                            onChange={(e) => {
-                              const raw = e.target.value.trim()
-                              const tw = raw === "" ? null : parseFloat(raw)
-                              setEditingProgram({
-                                ...p,
-                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetWeight: Number.isFinite(tw as any) ? (tw as any) : null } : x)),
-                              })
-                            }}
-                          />
-                        </div>
+
+                        {pe.sets.length === 0 ? (
+                          <p className="mt-2 text-sm text-muted-foreground">Add planned sets (optional targets).</p>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            {pe.sets.map((s, si) => (
+                              <div key={s.id} className="rounded-lg border border-border bg-card/60 p-2.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-medium text-foreground">Set {si + 1}</p>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="text-muted-foreground"
+                                    onClick={() => {
+                                      setEditingProgram({
+                                        ...p,
+                                        exercises: p.exercises.map((x) =>
+                                          x.id === pe.id ? { ...x, sets: x.sets.filter((z) => z.id !== s.id) } : x,
+                                        ),
+                                      })
+                                    }}
+                                    aria-label="Remove set"
+                                  >
+                                    <Trash2 className="size-4" />
+                                  </Button>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                  <div>
+                                    <Label className="text-xs text-muted-foreground">Target weight (kg)</Label>
+                                    <Input
+                                      type="number"
+                                      inputMode="decimal"
+                                      min={0}
+                                      step="0.5"
+                                      className="mt-1 h-10"
+                                      value={s.targetWeight == null ? "" : String(s.targetWeight)}
+                                      onChange={(e) => {
+                                        const raw = e.target.value.trim()
+                                        const tw = raw === "" ? null : parseFloat(raw)
+                                        setEditingProgram({
+                                          ...p,
+                                          exercises: p.exercises.map((x) =>
+                                            x.id === pe.id
+                                              ? {
+                                                  ...x,
+                                                  sets: x.sets.map((z) =>
+                                                    z.id === s.id
+                                                      ? { ...z, targetWeight: Number.isFinite(tw as any) ? (tw as any) : null }
+                                                      : z,
+                                                  ),
+                                                }
+                                              : x,
+                                          ),
+                                        })
+                                      }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label className="text-xs text-muted-foreground">Target reps</Label>
+                                    <Input
+                                      type="number"
+                                      inputMode="numeric"
+                                      min={0}
+                                      step="1"
+                                      className="mt-1 h-10"
+                                      value={s.targetReps == null ? "" : String(s.targetReps)}
+                                      onChange={(e) => {
+                                        const raw = e.target.value.trim()
+                                        const tr = raw === "" ? null : parseInt(raw, 10)
+                                        setEditingProgram({
+                                          ...p,
+                                          exercises: p.exercises.map((x) =>
+                                            x.id === pe.id
+                                              ? {
+                                                  ...x,
+                                                  sets: x.sets.map((z) =>
+                                                    z.id === s.id
+                                                      ? { ...z, targetReps: Number.isFinite(tr as any) ? (tr as any) : null }
+                                                      : z,
+                                                  ),
+                                                }
+                                              : x,
+                                          ),
+                                        })
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   )
@@ -1534,7 +1691,7 @@ export function FitnessApp() {
                     onClick={() => {
                       setActiveProgram(p)
                       // Start with the first planned exercise if available, otherwise choose manually.
-                      const first = p.items[0]?.exerciseId
+                      const first = p.exercises[0]?.exerciseId
                       if (first) {
                         activateExercise(first)
                         setScreen("workout")
@@ -1544,7 +1701,7 @@ export function FitnessApp() {
                     }}
                   >
                     <span className="font-semibold">{p.name}</span>
-                    <span className="text-xs text-muted-foreground">{p.items.length} ex</span>
+                    <span className="text-xs text-muted-foreground">{p.exercises.length} ex</span>
                   </Button>
                 ))}
               </div>
@@ -2396,30 +2553,69 @@ export function FitnessApp() {
       {/* Current exercise header (always visible) */}
       <div className="border-b border-border px-4 py-3">
         <div className="mx-auto w-full max-w-md">
-          {activeProgram && programProgress?.next ? (
-            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Next planned</p>
-              <p className="mt-0.5 font-semibold text-foreground">
-                {(() => {
-                  const ex = exercises.find((e) => e.id === programProgress.next!.exerciseId)
-                  return ex?.name ?? programProgress.next!.exerciseName
-                })()}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {(() => {
-                  const it = programProgress.next!
-                  const done = programProgress.setsByExerciseId.get(it.exerciseId) ?? 0
-                  const remaining = Math.max(0, it.targetSets - done)
-                  const tw = it.targetWeight != null ? ` @ ${it.targetWeight} kg` : ""
-                  return `${remaining} set${remaining === 1 ? "" : "s"} left · target ${it.targetReps} reps${tw}`
-                })()}
-              </p>
-            </div>
-          ) : activeProgram ? (
+          {activeProgram ? (
             <div className="mb-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Program</p>
               <p className="mt-0.5 font-semibold text-foreground">{activeProgram.name}</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">All planned sets completed.</p>
+
+              {programProgress?.currentPlanned ? (
+                <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Current plan
+                  </p>
+                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                    {(() => {
+                      const ex = exercises.find((e) => e.id === programProgress.currentPlanned!.exerciseId)
+                      return ex?.name ?? programProgress.currentPlanned!.exerciseName
+                    })()}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {(() => {
+                      const ex = programProgress.currentPlanned!
+                      const done = programProgress.currentDone
+                      const total = ex.sets.length
+                      const next = programProgress.currentNextSet
+                      const w = next?.targetWeight != null ? `${next.targetWeight} kg` : "— kg"
+                      const r = next?.targetReps != null ? `${next.targetReps} reps` : "— reps"
+                      return `Set ${Math.min(done + 1, total)} / ${total} · Planned: ${w} × ${r}`
+                    })()}
+                  </p>
+                </div>
+              ) : null}
+
+              {programProgress?.nextExercise ? (
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    Next:{" "}
+                    <span className="font-medium text-foreground">
+                      {(() => {
+                        const ex = exercises.find((e) => e.id === programProgress.nextExercise!.exerciseId)
+                        return ex?.name ?? programProgress.nextExercise!.exerciseName
+                      })()}
+                    </span>
+                  </p>
+                  {(() => {
+                    const currentId = currentExerciseId
+                    const currentPlannedId = programProgress.currentPlanned?.exerciseId ?? null
+                    const currentDone = programProgress.currentDone
+                    const currentTotal = programProgress.currentPlanned?.sets.length ?? 0
+                    const isCurrentComplete =
+                      currentPlannedId != null && currentPlannedId === currentId && currentDone >= currentTotal
+                    return isCurrentComplete ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => activateExercise(programProgress.nextExercise!.exerciseId)}
+                      >
+                        Next exercise
+                      </Button>
+                    ) : null
+                  })()}
+                </div>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">All planned sets completed.</p>
+              )}
             </div>
           ) : null}
 
@@ -2970,6 +3166,20 @@ export function FitnessApp() {
             <p>
               <span className="text-foreground">Current set {pendingLogSetNumber}</span>
             </p>
+            {activeProgram && programProgress?.currentPlanned ? (
+              <p>
+                Planned set {pendingLogSetNumber}:{" "}
+                <span className="font-medium text-foreground">
+                  {(() => {
+                    const ex = programProgress.currentPlanned
+                    const s = ex?.sets[pendingLogSetNumber - 1]
+                    const w = s?.targetWeight != null ? `${s.targetWeight} kg` : "— kg"
+                    const r = s?.targetReps != null ? `${s.targetReps} reps` : "— reps"
+                    return `${w} × ${r}`
+                  })()}
+                </span>
+              </p>
+            ) : null}
             {lastTimeSetMatchingPending ? (
               <p>
                 Last time set {pendingLogSetNumber}:{" "}
