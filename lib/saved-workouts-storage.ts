@@ -99,6 +99,21 @@ export function deleteSavedWorkout(id: string) {
   }
 }
 
+/** Replace a workout by id (e.g. after editing sets). Local only. */
+export function replaceSavedWorkout(workout: SavedWorkout) {
+  if (typeof window === "undefined") return
+  try {
+    const list = loadSavedWorkouts()
+    const i = list.findIndex((w) => w.id === workout.id)
+    if (i < 0) return
+    const next = [...list]
+    next[i] = workout
+    saveSavedWorkouts(next)
+  } catch {
+    // ignore
+  }
+}
+
 export function newSavedWorkoutId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID()

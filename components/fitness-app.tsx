@@ -15,6 +15,8 @@ import {
   Plus,
   ChevronDown,
   ChevronRight,
+  Undo2,
+  LayoutList,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -36,7 +38,9 @@ import {
   deleteSavedWorkout,
   loadSavedWorkouts,
   newSavedWorkoutId,
+  replaceSavedWorkout,
   type SavedWorkout,
+  type SavedWorkoutSet,
   updateSavedWorkoutName,
 } from "@/lib/saved-workouts-storage"
 import { findLastExerciseSession, compareSetToPrevious } from "@/lib/exercise-memory"
@@ -47,7 +51,9 @@ import {
   newProgramItemId,
   upsertProgram,
   type Program,
+  type ProgramExercise,
 } from "@/lib/programs-storage"
+import { applyFitlogImport, downloadFitlogExportJson } from "@/lib/fitlog-backup"
 
 type Screen =
   | "home"
@@ -255,6 +261,76 @@ function savedWorkoutDisplayTitle(w: SavedWorkout): string {
   if (!n) return "Workout"
   if (isAutoDateWorkoutName(n, w.sessionEndedAt)) return "Workout"
   return n
+}
+
+function syncExercisesPerformedFromGroups(
+  groups: { exerciseName: string }[],
+  previous: string[],
+): string[] {
+  const inGroups = new Set(groups.map((g) => g.exerciseName))
+  const out = previous.filter((n) => inGroups.has(n))
+  for (const g of groups) {
+    if (!out.includes(g.exerciseName)) out.push(g.exerciseName)
+  }
+  return out
+}
+
+function updateSavedSetFields(
+  w: SavedWorkout,
+  groupName: string,
+  setId: string,
+  patch: Partial<Pick<SavedWorkoutSet, "weight" | "reps">>,
+): SavedWorkout {
+  return {
+    ...w,
+    byExercise: w.byExercise.map((g) =>
+      g.exerciseName !== groupName
+        ? g
+        : { ...g, sets: g.sets.map((s) => (s.id === setId ? { ...s, ...patch } : s)) },
+    ),
+  }
+}
+
+function deleteSavedSetFromWorkout(w: SavedWorkout, groupName: string, setId: string): SavedWorkout {
+  const byExercise = w.byExercise
+    .map((g) =>
+      g.exerciseName !== groupName ? g : { ...g, sets: g.sets.filter((s) => s.id !== setId) },
+    )
+    .filter((g) => g.sets.length > 0)
+  return {
+    ...w,
+    byExercise,
+    exercisesPerformed: syncExercisesPerformedFromGroups(byExercise, w.exercisesPerformed ?? []),
+  }
+}
+
+function moveSavedSetToGroup(
+  w: SavedWorkout,
+  fromGroup: string,
+  setId: string,
+  toExerciseName: string,
+): SavedWorkout | null {
+  if (fromGroup === toExerciseName) return w
+  const group = w.byExercise.find((g) => g.exerciseName === fromGroup)
+  const set = group?.sets.find((s) => s.id === setId)
+  if (!set) return null
+  let byExercise = w.byExercise
+    .map((g) => (g.exerciseName !== fromGroup ? g : { ...g, sets: g.sets.filter((s) => s.id !== setId) }))
+    .filter((g) => g.sets.length > 0)
+  const tIdx = byExercise.findIndex((g) => g.exerciseName === toExerciseName)
+  if (tIdx >= 0) {
+    const target = byExercise[tIdx]!
+    byExercise = [...byExercise]
+    byExercise[tIdx] = { ...target, sets: [...target.sets, { ...set }] }
+  } else {
+    byExercise = [...byExercise, { exerciseName: toExerciseName, sets: [{ ...set }] }]
+  }
+  const prev = w.exercisesPerformed ?? []
+  return {
+    ...w,
+    byExercise,
+    exercisesPerformed: syncExercisesPerformedFromGroups(byExercise, [...prev, toExerciseName]),
+  }
 }
 
 function exerciseCategoryLabel(c: StoredExercise["category"]): "Push" | "Pull" | "Legs" | "Unassigned" {
@@ -479,6 +555,26 @@ export function FitnessApp() {
   const [historyDetailWorkout, setHistoryDetailWorkout] = useState<SavedWorkout | null>(null)
   const [historyEditingId, setHistoryEditingId] = useState<string | null>(null)
   const [historyDraftName, setHistoryDraftName] = useState("")
+  const [sessionSetEditSheet, setSessionSetEditSheet] = useState<
+    | null
+    | {
+        log: SessionSetLog
+        phase: "actions" | "weight" | "reps" | "exercise"
+        draftW: string
+        draftR: string
+      }
+  >(null)
+  const [setEditPickerTab, setSetEditPickerTab] = useState<ExerciseTab>("All")
+  const [historySetEditSheet, setHistorySetEditSheet] = useState<
+    | null
+    | {
+        groupName: string
+        set: SavedWorkoutSet
+        phase: "actions" | "weight" | "reps" | "exercise"
+        draftW: string
+        draftR: string
+      }
+  >(null)
   const [postSaveComparison, setPostSaveComparison] = useState<
     | null
     | {
@@ -489,6 +585,7 @@ export function FitnessApp() {
   >(null)
   const postSaveComparisonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const repsInputRef = useRef<HTMLInputElement>(null)
+  const importBackupInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setTimeRef.current = setTime
@@ -647,6 +744,39 @@ export function FitnessApp() {
     const currentDone = currentPlanned ? setsByExerciseId.get(currentPlanned.exerciseId) ?? 0 : 0
     const currentNextSet =
       currentPlanned != null ? currentPlanned.sets[currentDone] ?? null : null
+    const currentTotalSets = currentPlanned?.sets.length ?? 0
+    const currentSetNumber =
+      currentPlanned && currentTotalSets > 0
+        ? currentDone >= currentTotalSets
+          ? currentTotalSets
+          : currentDone + 1
+        : 0
+    const currentAllSetsDone =
+      currentPlanned != null && currentTotalSets > 0 && currentDone >= currentTotalSets
+
+    let nextExercisePreview: {
+      exerciseId: string
+      exerciseName: string
+      setsCount: number
+      firstWeight: string
+      firstReps: string
+    } | null = null
+    if (nextExercise) {
+      const s0 = nextExercise.sets[0]
+      nextExercisePreview = {
+        exerciseId: nextExercise.exerciseId,
+        exerciseName: nextExercise.exerciseName,
+        setsCount: nextExercise.sets.length,
+        firstWeight: s0?.targetWeight != null ? `${s0.targetWeight} kg` : "—",
+        firstReps: s0?.targetReps != null ? `${s0.targetReps} reps` : "—",
+      }
+    }
+    const sameExerciseAsNext =
+      nextExercise != null &&
+      currentPlanned != null &&
+      nextExercise.exerciseId === currentPlanned.exerciseId
+    const remainingThisExercise =
+      currentPlanned != null ? Math.max(0, currentPlanned.sets.length - currentDone) : 0
 
     return {
       setsByExerciseId,
@@ -655,6 +785,12 @@ export function FitnessApp() {
       currentPlanned,
       currentDone,
       currentNextSet,
+      currentTotalSets,
+      currentSetNumber,
+      currentAllSetsDone,
+      nextExercisePreview,
+      sameExerciseAsNext,
+      remainingThisExercise,
     }
   }, [activeProgram, sessionLogs, currentExerciseId])
 
@@ -832,6 +968,7 @@ export function FitnessApp() {
       clearTimeout(postSaveComparisonTimerRef.current)
       postSaveComparisonTimerRef.current = null
     }
+    setSessionSetEditSheet(null)
   }, [])
 
   const activateExercise = useCallback(
@@ -949,7 +1086,7 @@ export function FitnessApp() {
         ? parseFloat(customWeight)
         : NaN
     const repCount = parseInt(reps, 10)
-    if (!Number.isFinite(weight) || weight <= 0) return
+    if (!Number.isFinite(weight) || weight < 0) return
     if (!Number.isFinite(repCount) || repCount <= 0) return
 
     const p = pendingAfterStop
@@ -1044,7 +1181,7 @@ export function FitnessApp() {
     setShowCustomWeight(true)
     if (pendingAfterStop) {
       const w = parseFloat(value)
-      if (Number.isFinite(w) && w > 0) {
+      if (Number.isFinite(w) && w >= 0) {
         const nextReps = getSuggestedRepsForWeight(
           pendingAfterStop.exerciseName,
           w,
@@ -1176,6 +1313,67 @@ export function FitnessApp() {
     }
     return null
   }, [sortedSavedWorkouts])
+
+  const persistHistoryWorkout = useCallback((next: SavedWorkout) => {
+    replaceSavedWorkout(next)
+    setSavedWorkoutsList(loadSavedWorkouts())
+    setHistoryDetailWorkout((prev) => (prev?.id === next.id ? next : prev))
+  }, [])
+
+  const saveWorkoutAsProgram = useCallback(
+    (w: SavedWorkout) => {
+      const performed =
+        w.exercisesPerformed?.length > 0 ? w.exercisesPerformed : w.byExercise.map((g) => g.exerciseName)
+      const groupByName = new Map(w.byExercise.map((g) => [g.exerciseName, g]))
+      let nextCatalog = [...exercises]
+      const resolveOrCreateExerciseId = (name: string, sampleW: number): string => {
+        const found = nextCatalog.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase())
+        if (found) return found.id
+        const id = newExerciseId()
+        const w0 = Number.isFinite(sampleW) && sampleW > 0 ? sampleW : 20
+        nextCatalog.push({ id, name, weights: [w0, w0, w0] as [number, number, number] })
+        return id
+      }
+      const programExercises: ProgramExercise[] = []
+      for (const name of performed) {
+        const g = groupByName.get(name)
+        if (!g?.sets.length) continue
+        const sampleW = g.sets[0]?.weight ?? 0
+        const exId = resolveOrCreateExerciseId(name, sampleW)
+        programExercises.push({
+          id: newProgramItemId(),
+          exerciseId: exId,
+          exerciseName: name,
+          sets: g.sets.map((s) => ({
+            id: newProgramItemId(),
+            targetWeight: Number.isFinite(s.weight) ? s.weight : null,
+            targetReps: Number.isFinite(s.reps) ? s.reps : null,
+          })),
+        })
+      }
+      if (programExercises.length === 0) {
+        if (typeof window !== "undefined") window.alert("No exercises in this workout to copy.")
+        return
+      }
+      if (nextCatalog.length !== exercises.length) {
+        saveExercises(nextCatalog)
+        setExercises(nextCatalog)
+      }
+      const now = new Date().toISOString()
+      const prog: Program = {
+        id: newProgramId(),
+        name: `${savedWorkoutDisplayTitle(w)} program`.slice(0, 120),
+        createdAt: now,
+        updatedAt: now,
+        exercises: programExercises,
+      }
+      upsertProgram(prog)
+      setProgramsList(loadPrograms())
+      setEditingProgram(prog)
+      setScreen("programEditor")
+    },
+    [exercises],
+  )
 
   // —— First-time setup (only when there are no saved exercises)
   if (screen === "home" && exercisesReady && exercises.length === 0) {
@@ -2176,11 +2374,24 @@ export function FitnessApp() {
                           variant="ghost"
                           size="icon"
                           className="text-muted-foreground"
+                          onClick={() => saveWorkoutAsProgram(w)}
+                          aria-label="Save as program"
+                        >
+                          <LayoutList className="size-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground"
                           onClick={() => {
                             if (typeof window !== "undefined" && !window.confirm("Delete this workout?")) return
                             deleteSavedWorkout(w.id)
                             setSavedWorkoutsList(loadSavedWorkouts())
-                            if (historyDetailWorkout?.id === w.id) setHistoryDetailWorkout(null)
+                            if (historyDetailWorkout?.id === w.id) {
+                              setHistoryDetailWorkout(null)
+                              setHistorySetEditSheet(null)
+                            }
                           }}
                           aria-label="Delete workout"
                         >
@@ -2230,6 +2441,7 @@ export function FitnessApp() {
             variant="ghost"
             size="icon"
             onClick={() => {
+              setHistorySetEditSheet(null)
               setHistoryDetailWorkout(null)
               setScreen("workoutHistory")
             }}
@@ -2350,37 +2562,289 @@ export function FitnessApp() {
             {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
           </p>
         </div>
+        <Button
+          type="button"
+          variant="secondary"
+          className="mx-auto mt-4 w-full max-w-md"
+          onClick={() => saveWorkoutAsProgram(w)}
+        >
+          <LayoutList className="mr-2 size-4" />
+          Save as Program
+        </Button>
         <div className="mx-auto mt-6 w-full max-w-md flex-1 space-y-6 overflow-y-auto pb-8">
           {w.byExercise.map((g) => (
             <section key={g.exerciseName}>
               <h2 className="text-sm font-semibold text-foreground">{g.exerciseName}</h2>
               <ul className="mt-2 space-y-2">
                 {g.sets.map((s) => (
-                  <li
-                    key={s.id}
-                    className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2.5 text-sm"
-                  >
-                    <div className="font-medium text-foreground">
-                      {s.weight} kg × {s.reps}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      Rest before next:{" "}
-                      {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
-                      {typeof s.setDurationSec === "number" && s.setDurationSec > 0 ? (
-                        <span> · Set duration {formatTime(s.setDurationSec)}</span>
-                      ) : null}
-                    </div>
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className="w-full rounded-lg border border-border/80 bg-secondary/30 px-3 py-2.5 text-left text-sm transition-colors hover:bg-secondary/50"
+                      onClick={() => {
+                        setSetEditPickerTab("All")
+                        setHistorySetEditSheet({
+                          groupName: g.exerciseName,
+                          set: s,
+                          phase: "actions",
+                          draftW: String(s.weight),
+                          draftR: String(s.reps),
+                        })
+                      }}
+                    >
+                      <div className="font-medium text-foreground">
+                        {s.weight} kg × {s.reps}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Rest before next:{" "}
+                        {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
+                        {typeof s.setDurationSec === "number" && s.setDurationSec > 0 ? (
+                          <span> · Set duration {formatTime(s.setDurationSec)}</span>
+                        ) : null}
+                      </div>
+                    </button>
                   </li>
                 ))}
               </ul>
             </section>
           ))}
         </div>
+        {historySetEditSheet && (
+          <div
+            className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/40 p-0 sm:items-center sm:justify-center sm:p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <button
+              type="button"
+              className="absolute inset-0 cursor-default"
+              aria-label="Close"
+              onClick={() => setHistorySetEditSheet(null)}
+            />
+            <div className="relative z-10 mx-auto max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl border border-border bg-card p-4 shadow-xl sm:max-h-[90vh] sm:rounded-2xl">
+              {historySetEditSheet.phase === "actions" && (
+                <>
+                  <p className="text-sm font-semibold text-foreground">Set options</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {historySetEditSheet.groupName} · {historySetEditSheet.set.weight} kg ×{" "}
+                    {historySetEditSheet.set.reps}
+                  </p>
+                  <div className="mt-4 grid gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11"
+                      onClick={() => setHistorySetEditSheet((s) => s && { ...s, phase: "weight" })}
+                    >
+                      Edit weight
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11"
+                      onClick={() => setHistorySetEditSheet((s) => s && { ...s, phase: "reps" })}
+                    >
+                      Edit reps
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="h-11"
+                      onClick={() => {
+                        setSetEditPickerTab("All")
+                        setHistorySetEditSheet((s) => s && { ...s, phase: "exercise" })
+                      }}
+                    >
+                      Change exercise
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      className="h-11"
+                      onClick={() => {
+                        if (typeof window !== "undefined" && !window.confirm("Delete this set?")) return
+                        const next = deleteSavedSetFromWorkout(
+                          w,
+                          historySetEditSheet.groupName,
+                          historySetEditSheet.set.id,
+                        )
+                        persistHistoryWorkout(next)
+                        setHistorySetEditSheet(null)
+                      }}
+                    >
+                      Delete set
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11"
+                      onClick={() => setHistorySetEditSheet(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              )}
+              {historySetEditSheet.phase === "weight" && (
+                <>
+                  <p className="text-sm font-semibold text-foreground">Weight (kg)</p>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.5"
+                    className="mt-2 h-11"
+                    value={historySetEditSheet.draftW}
+                    onChange={(e) => setHistorySetEditSheet((s) => s && { ...s, draftW: e.target.value })}
+                  />
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      type="button"
+                      className="flex-1"
+                      onClick={() => {
+                        const v = parseFloat(historySetEditSheet.draftW)
+                        if (!Number.isFinite(v) || v < 0) return
+                        const next = updateSavedSetFields(
+                          w,
+                          historySetEditSheet.groupName,
+                          historySetEditSheet.set.id,
+                          { weight: v },
+                        )
+                        persistHistoryWorkout(next)
+                        setHistorySetEditSheet(null)
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setHistorySetEditSheet(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              )}
+              {historySetEditSheet.phase === "reps" && (
+                <>
+                  <p className="text-sm font-semibold text-foreground">Reps</p>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={99}
+                    className="mt-2 h-11"
+                    value={historySetEditSheet.draftR}
+                    onChange={(e) => setHistorySetEditSheet((s) => s && { ...s, draftR: e.target.value })}
+                  />
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      type="button"
+                      className="flex-1"
+                      onClick={() => {
+                        const v = parseInt(historySetEditSheet.draftR, 10)
+                        if (!Number.isFinite(v) || v < 1) return
+                        const next = updateSavedSetFields(
+                          w,
+                          historySetEditSheet.groupName,
+                          historySetEditSheet.set.id,
+                          { reps: v },
+                        )
+                        persistHistoryWorkout(next)
+                        setHistorySetEditSheet(null)
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setHistorySetEditSheet(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              )}
+              {historySetEditSheet.phase === "exercise" && (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-foreground">Pick exercise</p>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setHistorySetEditSheet((s) => s && { ...s, phase: "actions" })}
+                    >
+                      Back
+                    </Button>
+                  </div>
+                  <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
+                    {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+                      <Button
+                        key={t}
+                        type="button"
+                        variant={setEditPickerTab === t ? "default" : "secondary"}
+                        size="sm"
+                        className={cn(
+                          "h-8 rounded-full px-3 text-xs",
+                          setEditPickerTab === t && "bg-primary text-primary-foreground",
+                        )}
+                        onClick={() => setSetEditPickerTab(t)}
+                      >
+                        {t}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="mt-3 max-h-[45vh] overflow-y-auto pr-1">
+                    {groupExercisesForUI(exercises)
+                      .filter((g) => (setEditPickerTab === "All" ? true : g.label === setEditPickerTab))
+                      .map((group) => (
+                        <div key={group.label} className="mb-4">
+                          {setEditPickerTab === "All" ? (
+                            <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {group.label === "Unassigned" ? "Unassigned" : group.label}
+                            </p>
+                          ) : null}
+                          <div className="space-y-2">
+                            {group.items.map((ex) => (
+                              <Button
+                                key={ex.id}
+                                type="button"
+                                variant="secondary"
+                                className="h-12 w-full justify-start rounded-xl px-4 text-left font-semibold"
+                                onClick={() => {
+                                  const moved = moveSavedSetToGroup(
+                                    w,
+                                    historySetEditSheet.groupName,
+                                    historySetEditSheet.set.id,
+                                    ex.name,
+                                  )
+                                  if (moved) persistHistoryWorkout(moved)
+                                  setHistorySetEditSheet(null)
+                                }}
+                              >
+                                {ex.name}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         <Button
           type="button"
           variant="outline"
           className="mx-auto mt-4 w-full max-w-md"
           onClick={() => {
+            setHistorySetEditSheet(null)
             setHistoryDetailWorkout(null)
             setScreen("home")
           }}
@@ -2431,6 +2895,62 @@ export function FitnessApp() {
               Dark
             </Button>
           </div>
+        </div>
+
+        <div className="mx-auto mb-6 w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-foreground">Backup</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Export or import all local data (exercises, workouts, programs, theme, starter level) as one JSON file.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-11"
+              onClick={() => {
+                if (typeof window === "undefined") return
+                downloadFitlogExportJson()
+              }}
+            >
+              Export JSON
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              onClick={() => importBackupInputRef.current?.click()}
+            >
+              Import JSON
+            </Button>
+          </div>
+          <input
+            ref={importBackupInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="sr-only"
+            aria-hidden
+            onChange={async (e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ""
+              if (!file || typeof window === "undefined") return
+              try {
+                const text = await file.text()
+                const parsed: unknown = JSON.parse(text)
+                const { applied, theme: importedTheme } = applyFitlogImport(parsed)
+                setExercises(loadExercises())
+                setSavedWorkoutsList(loadSavedWorkouts())
+                setProgramsList(loadPrograms())
+                if (importedTheme) setTheme(importedTheme)
+                window.alert(
+                  applied.length
+                    ? `Restored: ${applied.join(", ")}.`
+                    : "No recognized fields in that file (nothing was changed).",
+                )
+              } catch {
+                window.alert("Could not read or parse that file.")
+              }
+            }}
+          />
         </div>
 
         <div className="mx-auto w-full max-w-md space-y-3 rounded-xl border border-border p-4">
@@ -2911,46 +3431,83 @@ export function FitnessApp() {
       <div className="border-b border-border px-4 py-3">
         <div className="mx-auto w-full max-w-md">
           {activeProgram ? (
-            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Program</p>
-              <p className="mt-0.5 font-semibold text-foreground">{activeProgram.name}</p>
+            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-3 text-sm shadow-sm">
+              <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Program
+                </span>
+                <span className="truncate text-right text-xs font-medium text-foreground">{activeProgram.name}</span>
+              </div>
 
               {programProgress?.currentPlanned ? (
-                <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Current plan
-                  </p>
-                  <p className="mt-0.5 text-sm font-semibold text-foreground">
-                    {(() => {
-                      const ex = exercises.find((e) => e.id === programProgress.currentPlanned!.exerciseId)
-                      return ex?.name ?? programProgress.currentPlanned!.exerciseName
-                    })()}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {(() => {
-                      const ex = programProgress.currentPlanned!
-                      const done = programProgress.currentDone
-                      const total = ex.sets.length
-                      const next = programProgress.currentNextSet
-                      const w = next?.targetWeight != null ? `${next.targetWeight} kg` : "— kg"
-                      const r = next?.targetReps != null ? `${next.targetReps} reps` : "— reps"
-                      return `Set ${Math.min(done + 1, total)} / ${total} · Planned: ${w} × ${r}`
-                    })()}
-                  </p>
-                </div>
-              ) : null}
-
-              {programProgress?.nextExercise ? (
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <p className="text-xs text-muted-foreground">
-                    Next:{" "}
-                    <span className="font-medium text-foreground">
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Current</p>
+                    <p className="text-lg font-semibold leading-snug text-foreground">
                       {(() => {
-                        const ex = exercises.find((e) => e.id === programProgress.nextExercise!.exerciseId)
-                        return ex?.name ?? programProgress.nextExercise!.exerciseName
+                        const ex = exercises.find((e) => e.id === programProgress.currentPlanned!.exerciseId)
+                        return ex?.name ?? programProgress.currentPlanned!.exerciseName
                       })()}
-                    </span>
-                  </p>
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Set {programProgress.currentSetNumber} / {programProgress.currentTotalSets}
+                      {programProgress.currentAllSetsDone ? (
+                        <span className="ml-1 font-medium text-foreground">· Done</span>
+                      ) : null}
+                    </p>
+                    {!programProgress.currentAllSetsDone ? (
+                      <p className="mt-1 text-sm">
+                        <span className="text-muted-foreground">Plan </span>
+                        <span className="font-semibold tabular-nums text-foreground">
+                          {programProgress.currentNextSet?.targetWeight != null
+                            ? `${programProgress.currentNextSet.targetWeight} kg`
+                            : "— kg"}{" "}
+                          ×{" "}
+                          {programProgress.currentNextSet?.targetReps != null
+                            ? `${programProgress.currentNextSet.targetReps} reps`
+                            : "— reps"}
+                        </span>
+                      </p>
+                    ) : null}
+                    {currentExerciseLastSet ? (
+                      <p className="text-xs text-muted-foreground">
+                        Last logged{" "}
+                        <span className="font-medium text-foreground">
+                          {currentExerciseLastSet.weight} kg × {currentExerciseLastSet.reps}
+                        </span>
+                      </p>
+                    ) : null}
+                  </div>
+
+                  {programProgress.nextExercisePreview && !programProgress.sameExerciseAsNext ? (
+                    <div className="rounded-lg border border-dashed border-border bg-muted/25 px-2.5 py-2 text-xs">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Next up
+                      </p>
+                      <p className="mt-0.5 font-semibold text-foreground">
+                        {(() => {
+                          const nx = programProgress.nextExercisePreview!
+                          const ex = exercises.find((e) => e.id === nx.exerciseId)
+                          return ex?.name ?? nx.exerciseName
+                        })()}
+                      </p>
+                      <p className="mt-0.5 text-muted-foreground">
+                        {programProgress.nextExercisePreview.setsCount} sets · first{" "}
+                        <span className="font-medium text-foreground">
+                          {programProgress.nextExercisePreview.firstWeight} ×{" "}
+                          {programProgress.nextExercisePreview.firstReps}
+                        </span>
+                      </p>
+                    </div>
+                  ) : programProgress.sameExerciseAsNext && !programProgress.currentAllSetsDone ? (
+                    <p className="text-xs text-muted-foreground">
+                      {programProgress.remainingThisExercise} more set
+                      {programProgress.remainingThisExercise !== 1 ? "s" : ""} on this exercise.
+                    </p>
+                  ) : programProgress.currentAllSetsDone && !programProgress.nextExercise ? (
+                    <p className="text-xs font-medium text-foreground">Program complete.</p>
+                  ) : null}
+
                   {(() => {
                     const currentId = currentExerciseId
                     const currentPlannedId = programProgress.currentPlanned?.exerciseId ?? null
@@ -2958,20 +3515,23 @@ export function FitnessApp() {
                     const currentTotal = programProgress.currentPlanned?.sets.length ?? 0
                     const isCurrentComplete =
                       currentPlannedId != null && currentPlannedId === currentId && currentDone >= currentTotal
-                    return isCurrentComplete ? (
+                    return isCurrentComplete && programProgress.nextExercise ? (
                       <Button
                         type="button"
                         variant="secondary"
                         size="sm"
+                        className="h-9 w-full"
                         onClick={() => activateExercise(programProgress.nextExercise!.exerciseId)}
                       >
-                        Next exercise
+                        Go to next exercise
                       </Button>
                     ) : null
                   })()}
                 </div>
               ) : (
-                <p className="mt-1 text-xs text-muted-foreground">All planned sets completed.</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Pick an exercise that matches this program to see planned sets.
+                </p>
               )}
             </div>
           ) : null}
@@ -3361,7 +3921,24 @@ export function FitnessApp() {
 
         {sessionLogs.length > 0 && (
           <div className="mt-6 w-full max-w-md flex-1 self-center overflow-y-auto pb-6">
-            <h3 className="mb-3 text-sm font-medium text-foreground">Session log</h3>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-foreground">Session log</h3>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0 gap-1"
+                disabled={showLogForm || sessionLogs.length === 0}
+                onClick={() => {
+                  if (typeof window === "undefined") return
+                  if (!window.confirm("Are you sure you want to undo the last set?")) return
+                  setSessionLogs((prev) => (prev.length ? prev.slice(0, -1) : prev))
+                }}
+              >
+                <Undo2 className="size-3.5" />
+                Undo last set
+              </Button>
+            </div>
             {sessionStartedAt && (
               <p className="mb-3 text-xs text-muted-foreground">Started {formatSessionDate(sessionStartedAt)}</p>
             )}
@@ -3373,19 +3950,30 @@ export function FitnessApp() {
                     <h4 className="mb-1.5 text-sm font-semibold text-foreground">{name}</h4>
                     <ul className="space-y-2 text-sm">
                       {list.map((log) => (
-                        <li
-                          key={log.id}
-                          className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left leading-snug"
-                        >
-                          <div>
-                            {log.reps} reps @ {log.weight} kg
-                          </div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">
-                            Set ended {formatClock(log.setEndedAt)} · work {formatTime(log.setDurationSec)}
-                            {log.restBeforeNextSetSec != null
-                              ? ` · rest before next ${formatTime(log.restBeforeNextSetSec)}`
-                              : " · rest before next — (until you start the next set)"}
-                          </div>
+                        <li key={log.id}>
+                          <button
+                            type="button"
+                            className="w-full rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left leading-snug transition-colors hover:bg-secondary/50"
+                            onClick={() => {
+                              setSetEditPickerTab("All")
+                              setSessionSetEditSheet({
+                                log,
+                                phase: "actions",
+                                draftW: String(log.weight),
+                                draftR: String(log.reps),
+                              })
+                            }}
+                          >
+                            <div>
+                              {log.reps} reps @ {log.weight} kg
+                            </div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">
+                              Set ended {formatClock(log.setEndedAt)} · work {formatTime(log.setDurationSec)}
+                              {log.restBeforeNextSetSec != null
+                                ? ` · rest before next ${formatTime(log.restBeforeNextSetSec)}`
+                                : " · rest before next — (until you start the next set)"}
+                            </div>
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -3519,34 +4107,64 @@ export function FitnessApp() {
               Change exercise
             </Button>
           </div>
-          <div className="mb-4 space-y-1 text-center text-sm text-muted-foreground">
-            <p>
-              <span className="text-foreground">Current set {pendingLogSetNumber}</span>
+          <div className="mb-4 space-y-2 text-sm text-muted-foreground">
+            <p className="text-center">
+              <span className="text-foreground">Set {pendingLogSetNumber}</span>
+              {activeProgram && programProgress?.currentPlanned ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  / {programProgress.currentPlanned.sets.length}
+                </span>
+              ) : null}
             </p>
             {activeProgram && programProgress?.currentPlanned ? (
-              <p>
-                Planned set {pendingLogSetNumber}:{" "}
-                <span className="font-medium text-foreground">
-                  {(() => {
-                    const ex = programProgress.currentPlanned
-                    const s = ex?.sets[pendingLogSetNumber - 1]
-                    const w = s?.targetWeight != null ? `${s.targetWeight} kg` : "— kg"
-                    const r = s?.targetReps != null ? `${s.targetReps} reps` : "— reps"
-                    return `${w} × ${r}`
-                  })()}
-                </span>
-              </p>
+              <div className="grid grid-cols-2 gap-2 text-left text-xs">
+                <div className="rounded-lg border border-border bg-muted/30 px-2.5 py-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Planned</p>
+                  <p className="mt-0.5 font-semibold tabular-nums text-foreground">
+                    {(() => {
+                      const ex = programProgress.currentPlanned
+                      const s = ex?.sets[pendingLogSetNumber - 1]
+                      const w = s?.targetWeight != null ? `${s.targetWeight} kg` : "—"
+                      const r = s?.targetReps != null ? `${s.targetReps} reps` : "—"
+                      return `${w} × ${r}`
+                    })()}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Your input</p>
+                  <p className="mt-0.5 font-semibold tabular-nums text-foreground">
+                    {(() => {
+                      const w =
+                        selectedWeight != null
+                          ? `${selectedWeight} kg`
+                          : customWeight.trim() !== "" &&
+                              Number.isFinite(parseFloat(customWeight)) &&
+                              parseFloat(customWeight) >= 0
+                            ? `${parseFloat(customWeight)} kg`
+                            : "—"
+                      const r =
+                        reps.trim() !== "" && Number.isFinite(parseInt(reps, 10))
+                          ? `${parseInt(reps, 10)} reps`
+                          : "—"
+                      return `${w} × ${r}`
+                    })()}
+                  </p>
+                </div>
+              </div>
             ) : null}
-            {lastTimeSetMatchingPending ? (
-              <p>
-                Last time set {pendingLogSetNumber}:{" "}
-                <span className="font-medium text-foreground">
-                  {lastTimeSetMatchingPending.weight} kg x {lastTimeSetMatchingPending.reps}
-                </span>
-              </p>
-            ) : (
-              <p className="text-xs">No matching set from last time</p>
-            )}
+            <div className="space-y-1 text-center text-xs">
+              {lastTimeSetMatchingPending ? (
+                <p>
+                  Last time set {pendingLogSetNumber}:{" "}
+                  <span className="font-medium text-foreground">
+                    {lastTimeSetMatchingPending.weight} kg × {lastTimeSetMatchingPending.reps}
+                  </span>
+                </p>
+              ) : (
+                <p>No matching set from last time</p>
+              )}
+            </div>
           </div>
           <form
             className="flex min-h-0 flex-1 flex-col"
@@ -3754,6 +4372,217 @@ export function FitnessApp() {
               Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} ({formatTime(pendingAfterStop.setDurationSec)} work)
             </p>
           </form>
+        </div>
+      )}
+
+      {sessionSetEditSheet && (
+        <div
+          className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/40 p-0 sm:items-center sm:justify-center sm:p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            aria-label="Close"
+            onClick={() => setSessionSetEditSheet(null)}
+          />
+          <div className="relative z-10 mx-auto max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl border border-border bg-card p-4 shadow-xl sm:max-h-[90vh] sm:rounded-2xl">
+            {sessionSetEditSheet.phase === "actions" && (
+              <>
+                <p className="text-sm font-semibold text-foreground">Set options</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {sessionSetEditSheet.log.exerciseName} · {sessionSetEditSheet.log.weight} kg ×{" "}
+                  {sessionSetEditSheet.log.reps}
+                </p>
+                <div className="mt-4 grid gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-11"
+                    onClick={() => setSessionSetEditSheet((s) => s && { ...s, phase: "weight" })}
+                  >
+                    Edit weight
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-11"
+                    onClick={() => setSessionSetEditSheet((s) => s && { ...s, phase: "reps" })}
+                  >
+                    Edit reps
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-11"
+                    onClick={() => {
+                      setSetEditPickerTab("All")
+                      setSessionSetEditSheet((s) => s && { ...s, phase: "exercise" })
+                    }}
+                  >
+                    Change exercise
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="h-11"
+                    onClick={() => {
+                      if (typeof window !== "undefined" && !window.confirm("Delete this set?")) return
+                      const id = sessionSetEditSheet.log.id
+                      setSessionLogs((prev) => prev.filter((l) => l.id !== id))
+                      setSessionSetEditSheet(null)
+                    }}
+                  >
+                    Delete set
+                  </Button>
+                  <Button type="button" variant="outline" className="h-11" onClick={() => setSessionSetEditSheet(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+            {sessionSetEditSheet.phase === "weight" && (
+              <>
+                <p className="text-sm font-semibold text-foreground">Weight (kg)</p>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.5"
+                  className="mt-2 h-11"
+                  value={sessionSetEditSheet.draftW}
+                  onChange={(e) => setSessionSetEditSheet((s) => s && { ...s, draftW: e.target.value })}
+                />
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    type="button"
+                    className="flex-1"
+                    onClick={() => {
+                      const v = parseFloat(sessionSetEditSheet.draftW)
+                      if (!Number.isFinite(v) || v < 0) return
+                      const id = sessionSetEditSheet.log.id
+                      setSessionLogs((prev) => prev.map((l) => (l.id === id ? { ...l, weight: v } : l)))
+                      setSessionSetEditSheet(null)
+                    }}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setSessionSetEditSheet(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+            {sessionSetEditSheet.phase === "reps" && (
+              <>
+                <p className="text-sm font-semibold text-foreground">Reps</p>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={99}
+                  className="mt-2 h-11"
+                  value={sessionSetEditSheet.draftR}
+                  onChange={(e) => setSessionSetEditSheet((s) => s && { ...s, draftR: e.target.value })}
+                />
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    type="button"
+                    className="flex-1"
+                    onClick={() => {
+                      const v = parseInt(sessionSetEditSheet.draftR, 10)
+                      if (!Number.isFinite(v) || v < 1) return
+                      const id = sessionSetEditSheet.log.id
+                      setSessionLogs((prev) => prev.map((l) => (l.id === id ? { ...l, reps: v } : l)))
+                      setSessionSetEditSheet(null)
+                    }}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setSessionSetEditSheet(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+            {sessionSetEditSheet.phase === "exercise" && (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-foreground">Pick exercise</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSessionSetEditSheet((s) => s && { ...s, phase: "actions" })}
+                  >
+                    Back
+                  </Button>
+                </div>
+                <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
+                  {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+                    <Button
+                      key={t}
+                      type="button"
+                      variant={setEditPickerTab === t ? "default" : "secondary"}
+                      size="sm"
+                      className={cn(
+                        "h-8 rounded-full px-3 text-xs",
+                        setEditPickerTab === t && "bg-primary text-primary-foreground",
+                      )}
+                      onClick={() => setSetEditPickerTab(t)}
+                    >
+                      {t}
+                    </Button>
+                  ))}
+                </div>
+                <div className="mt-3 max-h-[45vh] overflow-y-auto pr-1">
+                  {groupExercisesForUI(exercises)
+                    .filter((g) => (setEditPickerTab === "All" ? true : g.label === setEditPickerTab))
+                    .map((group) => (
+                      <div key={group.label} className="mb-4">
+                        {setEditPickerTab === "All" ? (
+                          <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {group.label === "Unassigned" ? "Unassigned" : group.label}
+                          </p>
+                        ) : null}
+                        <div className="space-y-2">
+                          {group.items.map((ex) => (
+                            <Button
+                              key={ex.id}
+                              type="button"
+                              variant="secondary"
+                              className="h-12 w-full justify-start rounded-xl px-4 text-left font-semibold"
+                              onClick={() => {
+                                const id = sessionSetEditSheet.log.id
+                                setSessionLogs((prev) =>
+                                  prev.map((l) =>
+                                    l.id === id ? { ...l, exerciseId: ex.id, exerciseName: ex.name } : l,
+                                  ),
+                                )
+                                setSessionSetEditSheet(null)
+                              }}
+                            >
+                              {ex.name}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
