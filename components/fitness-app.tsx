@@ -126,6 +126,14 @@ function formatSessionDate(iso: string) {
   }
 }
 
+function formatWorkoutNameDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+  } catch {
+    return iso
+  }
+}
+
 function formatClock(iso: string) {
   try {
     return new Date(iso).toLocaleTimeString(undefined, {
@@ -353,6 +361,12 @@ export function FitnessApp() {
   const [draftW1, setDraftW1] = useState("")
   const [draftW2, setDraftW2] = useState("")
   const [draftW3, setDraftW3] = useState("")
+  const [editingExerciseId, setEditingExerciseId] = useState<string | null>(null)
+  const [editExName, setEditExName] = useState("")
+  const [editExCategory, setEditExCategory] = useState<"Push" | "Pull" | "Legs" | "">("")
+  const [editExW1, setEditExW1] = useState("")
+  const [editExW2, setEditExW2] = useState("")
+  const [editExW3, setEditExW3] = useState("")
 
   const [exercisesReady, setExercisesReady] = useState(false)
 
@@ -474,6 +488,12 @@ export function FitnessApp() {
       (a, b) => new Date(b.sessionEndedAt).getTime() - new Date(a.sessionEndedAt).getTime(),
     )
   }, [savedWorkoutsList])
+
+  const savedWorkoutsForInsights = useMemo(() => {
+    // Used for summary/history computed labels; exclude current summary workout when present.
+    const excludeId = summaryWorkout?.id
+    return sortedSavedWorkouts.filter((w) => w.id !== excludeId)
+  }, [sortedSavedWorkouts, summaryWorkout?.id])
 
   const currentExercise = useMemo(
     () => exercises.find((e) => e.id === currentExerciseId) ?? null,
@@ -958,6 +978,7 @@ export function FitnessApp() {
     )
     const saved: SavedWorkout = {
       id: newSavedWorkoutId(),
+      name: formatWorkoutNameDate(ended.toISOString()),
       sessionId: sessionId || "session",
       sessionStartedAt,
       sessionEndedAt: ended.toISOString(),
@@ -971,6 +992,19 @@ export function FitnessApp() {
     setIsPaused(false)
     setScreen("workoutSummary")
   }, [sessionLogs, sessionId, sessionStartedAt, resetWorkoutSession, showLogForm])
+
+  const suggestWorkoutName = useCallback((w: SavedWorkout): string | null => {
+    const sig = [...(w.exercisesPerformed ?? [])].slice().sort().join("|")
+    if (!sig) return null
+    for (const other of sortedSavedWorkouts) {
+      if (other.id === w.id) continue
+      const otherSig = [...(other.exercisesPerformed ?? [])].slice().sort().join("|")
+      if (otherSig !== sig) continue
+      const n = other.name?.trim()
+      if (n && n !== formatWorkoutNameDate(other.sessionEndedAt)) return n
+    }
+    return null
+  }, [sortedSavedWorkouts])
 
   // —— First-time setup (only when there are no saved exercises)
   if (screen === "home" && exercisesReady && exercises.length === 0) {
@@ -1179,6 +1213,19 @@ export function FitnessApp() {
                             placeholder="Workout name"
                           />
                           <div className="flex gap-2">
+                            {(() => {
+                              const suggestion = suggestWorkoutName(w)
+                              return suggestion ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => setHistoryDraftName(suggestion)}
+                                >
+                                  Use suggestion
+                                </Button>
+                              ) : null
+                            })()}
                             <Button
                               type="button"
                               size="sm"
@@ -1322,7 +1369,20 @@ export function FitnessApp() {
                 className="h-10"
                 placeholder={formatSessionDate(w.sessionEndedAt)}
               />
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
+                {(() => {
+                  const suggestion = suggestWorkoutName(w)
+                  return suggestion ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setHistoryDraftName(suggestion)}
+                    >
+                      Use suggestion
+                    </Button>
+                  ) : null
+                })()}
                 <Button
                   type="button"
                   size="sm"
@@ -1681,6 +1741,23 @@ export function FitnessApp() {
                                   variant="ghost"
                                   size="icon"
                                   className="text-muted-foreground"
+                                  onClick={() => {
+                                    setEditingExerciseId(e.id)
+                                    setEditExName(e.name)
+                                    setEditExCategory(e.category ?? "")
+                                    setEditExW1(String(e.weights[0]))
+                                    setEditExW2(String(e.weights[1]))
+                                    setEditExW3(String(e.weights[2]))
+                                  }}
+                                  aria-label={`Edit ${e.name}`}
+                                >
+                                  <Pencil className="size-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-muted-foreground"
                                   onClick={() => moveExerciseInGroup(e.id, -1)}
                                   aria-label={`Move ${e.name} up`}
                                   disabled={i === 0}
@@ -1722,6 +1799,74 @@ export function FitnessApp() {
             </div>
           )}
         </div>
+
+        {editingExerciseId && (
+          <div className="absolute inset-0 z-50 flex flex-col justify-end bg-black/30 p-0">
+            <button
+              type="button"
+              className="absolute inset-0 cursor-default"
+              aria-label="Close exercise editor"
+              onClick={() => setEditingExerciseId(null)}
+            />
+            <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-foreground">Edit exercise</h2>
+                <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setEditingExerciseId(null)}>
+                  Close
+                </Button>
+              </div>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground" htmlFor="edit-ex-name">Name</Label>
+                  <Input id="edit-ex-name" className="mt-1 h-11" value={editExName} onChange={(e) => setEditExName(e.target.value)} />
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Category</Label>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {(["Push","Pull","Legs"] as const).map((c) => (
+                      <Button key={c} type="button" variant={editExCategory===c ? "default":"secondary"} className={cn("h-10", editExCategory===c && "bg-primary text-primary-foreground")} onClick={() => setEditExCategory(c)}>
+                        {c}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Preset weights (kg)</Label>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <Input type="number" inputMode="decimal" min={0} step="0.5" className="h-11 text-center" value={editExW1} onChange={(e)=>setEditExW1(e.target.value)} />
+                    <Input type="number" inputMode="decimal" min={0} step="0.5" className="h-11 text-center" value={editExW2} onChange={(e)=>setEditExW2(e.target.value)} />
+                    <Input type="number" inputMode="decimal" min={0} step="0.5" className="h-11 text-center" value={editExW3} onChange={(e)=>setEditExW3(e.target.value)} />
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  className="h-12 w-full rounded-xl text-base font-semibold"
+                  onClick={() => {
+                    const name = editExName.trim()
+                    const w1 = parseFloat(editExW1)
+                    const w2 = parseFloat(editExW2)
+                    const w3 = parseFloat(editExW3)
+                    if (!name || [w1,w2,w3].some((w)=>!Number.isFinite(w) || w < 0)) return
+                    const category =
+                      editExCategory === "Push" || editExCategory === "Pull" || editExCategory === "Legs"
+                        ? editExCategory
+                        : undefined
+                    setExercises((prev) =>
+                      prev.map((x) =>
+                        x.id === editingExerciseId
+                          ? { ...x, name, category, weights: [w1, w2, w3] as [number, number, number] }
+                          : x,
+                      ),
+                    )
+                    setEditingExerciseId(null)
+                  }}
+                >
+                  Save changes
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -1731,46 +1876,49 @@ export function FitnessApp() {
     const w = summaryWorkout
     return (
       <div className="flex min-h-screen flex-col bg-background p-4">
-        <h1 className="text-xl font-semibold">Workout saved</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Stored on this device only.</p>
-        <div className="mt-4 space-y-2 rounded-xl border border-border p-4 text-sm">
-          <p>
-            <span className="text-muted-foreground">Started</span>{" "}
-            <span className="font-medium">{formatSessionDate(w.sessionStartedAt)}</span>
-          </p>
-          <p>
-            <span className="text-muted-foreground">Ended</span>{" "}
-            <span className="font-medium">{formatSessionDate(w.sessionEndedAt)}</span>
-          </p>
-          <p>
-            <span className="text-muted-foreground">Total time</span>{" "}
-            <span className="font-medium">{formatTime(w.totalDurationSec)}</span>
-          </p>
-          <p>
-            <span className="text-muted-foreground">Exercises</span>{" "}
-            <span className="font-medium">
-              {w.exercisesPerformed.length ? w.exercisesPerformed.join(", ") : "—"}
-            </span>
-          </p>
+        <h1 className="text-xl font-semibold text-foreground">{w.name?.trim() ? w.name : formatWorkoutNameDate(w.sessionEndedAt)}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Workout saved on this device.</p>
+        <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-border bg-card p-4 text-sm shadow-sm">
+          <div>
+            <p className="text-xs text-muted-foreground">Ended</p>
+            <p className="font-medium">{formatSessionDate(w.sessionEndedAt)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Duration</p>
+            <p className="font-medium">{formatTime(w.totalDurationSec)}</p>
+          </div>
+          <div className="col-span-2">
+            <p className="text-xs text-muted-foreground">Exercises</p>
+            <p className="font-medium">{w.exercisesPerformed.length ? w.exercisesPerformed.join(", ") : "—"}</p>
+          </div>
         </div>
-        <div className="mt-6 flex-1 space-y-4 overflow-y-auto">
+
+        <div className="mt-6 flex-1 space-y-5 overflow-y-auto pb-2">
           {w.byExercise.map((g) => (
             <div key={g.exerciseName}>
-              <h2 className="text-sm font-semibold">{g.exerciseName}</h2>
+              <h2 className="text-sm font-semibold text-foreground">{g.exerciseName}</h2>
               <ul className="mt-2 space-y-2">
                 {g.sets.map((s) => (
                   <li
                     key={s.id}
-                    className="rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left text-sm"
+                    className="rounded-xl border border-border bg-background/60 px-3 py-2.5 text-left text-sm shadow-sm"
                   >
-                    <div>
-                      {s.reps} × {s.weight} kg
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-medium text-foreground">
+                        {s.weight} kg × {s.reps}
+                      </div>
+                      {(() => {
+                        const prev = findLastExerciseSession(savedWorkoutsForInsights, g.exerciseName)
+                        const idx = g.sets.findIndex((x) => x.id === s.id)
+                        const prevMatch = prev?.sets[idx]
+                        const txt = compareSetToPrevious({ weight: s.weight, reps: s.reps }, prevMatch)
+                        return (
+                          <div className="text-xs text-muted-foreground">{txt}</div>
+                        )
+                      })()}
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      Ended {formatClock(s.setEndedAt)} · work {formatTime(s.setDurationSec)}
-                      {s.restBeforeNextSetSec != null
-                        ? ` · rest before next ${formatTime(s.restBeforeNextSetSec)}`
-                        : " · rest before next —"}
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Rest: {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
                     </div>
                   </li>
                 ))}
