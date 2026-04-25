@@ -327,14 +327,21 @@ export function FitnessApp() {
   const [setTime, setSetTime] = useState(0)
   const setTimeRef = useRef(0)
   const restTimeRef = useRef(0)
+  const setStartedAtMsRef = useRef<number | null>(null)
+  const restStartedAtMsRef = useRef<number | null>(null)
+  const setBaseSecRef = useRef(0)
+  const restBaseSecRef = useRef(0)
   const wakeLockRef = useRef<any>(null)
 
   const [showLogForm, setShowLogForm] = useState(false)
   const [pendingAfterStop, setPendingAfterStop] = useState<PendingAfterStop | null>(null)
   const [selectedWeight, setSelectedWeight] = useState<number | null>(null)
   const [customWeight, setCustomWeight] = useState("")
+  const [showCustomWeight, setShowCustomWeight] = useState(false)
+  const customWeightInputRef = useRef<HTMLInputElement>(null)
   const [reps, setReps] = useState("")
   const [showCustomReps, setShowCustomReps] = useState(false)
+  const [showLogChangeExerciseSheet, setShowLogChangeExerciseSheet] = useState(false)
 
   const [sessionLogs, setSessionLogs] = useState<SessionSetLog[]>([])
 
@@ -371,6 +378,25 @@ export function FitnessApp() {
   useEffect(() => {
     restTimeRef.current = restTime
   }, [restTime])
+
+  const computeSetElapsedSec = useCallback(() => {
+    const base = setBaseSecRef.current
+    const start = setStartedAtMsRef.current
+    if (start == null) return base
+    return Math.max(0, base + Math.floor((Date.now() - start) / 1000))
+  }, [])
+
+  const computeRestElapsedSec = useCallback(() => {
+    const base = restBaseSecRef.current
+    const start = restStartedAtMsRef.current
+    if (start == null) return base
+    return Math.max(0, base + Math.floor((Date.now() - start) / 1000))
+  }, [])
+
+  const syncTimersNow = useCallback(() => {
+    if (isSetActive) setSetTime(computeSetElapsedSec())
+    if (isResting) setRestTime(computeRestElapsedSec())
+  }, [computeRestElapsedSec, computeSetElapsedSec, isResting, isSetActive])
 
   // Keep screen awake during an active set (best-effort).
   useEffect(() => {
@@ -490,26 +516,69 @@ export function FitnessApp() {
     return () => cancelAnimationFrame(id)
   }, [showLogForm, showCustomReps])
 
+  useEffect(() => {
+    if (!showLogForm || !showCustomWeight) return
+    const id = requestAnimationFrame(() => {
+      customWeightInputRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [showLogForm, showCustomWeight])
+
   /** Rest runs whenever we are not in an active set and rest mode is on (e.g. after stop, including on log form) */
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval>
+    let interval: ReturnType<typeof setInterval> | null = null
+
+    // Ensure we have a start timestamp when running.
     if (isResting && !isSetActive && !isPaused) {
-      interval = setInterval(() => {
-        setRestTime((prev) => prev + 1)
-      }, 1000)
+      if (restStartedAtMsRef.current == null) restStartedAtMsRef.current = Date.now()
+      syncTimersNow()
+      interval = setInterval(syncTimersNow, 250)
+    } else {
+      // Freeze rest timer when not running.
+      if (restStartedAtMsRef.current != null) {
+        restBaseSecRef.current = computeRestElapsedSec()
+        restStartedAtMsRef.current = null
+        setRestTime(restBaseSecRef.current)
+      }
     }
-    return () => clearInterval(interval)
-  }, [isResting, isSetActive, isPaused])
+
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [computeRestElapsedSec, isPaused, isResting, isSetActive, syncTimersNow])
 
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval>
+    let interval: ReturnType<typeof setInterval> | null = null
+
     if (isSetActive && !isPaused) {
-      interval = setInterval(() => {
-        setSetTime((prev) => prev + 1)
-      }, 1000)
+      if (setStartedAtMsRef.current == null) setStartedAtMsRef.current = Date.now()
+      syncTimersNow()
+      interval = setInterval(syncTimersNow, 250)
+    } else {
+      if (setStartedAtMsRef.current != null) {
+        setBaseSecRef.current = computeSetElapsedSec()
+        setStartedAtMsRef.current = null
+        setSetTime(setBaseSecRef.current)
+      }
     }
-    return () => clearInterval(interval)
-  }, [isSetActive, isPaused])
+
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [computeSetElapsedSec, isPaused, isSetActive, syncTimersNow])
+
+  useEffect(() => {
+    const onVis = () => {
+      // When returning to the app, re-sync from timestamps.
+      if (document.visibilityState === "visible") syncTimersNow()
+    }
+    window.addEventListener("focus", syncTimersNow)
+    document.addEventListener("visibilitychange", onVis)
+    return () => {
+      window.removeEventListener("focus", syncTimersNow)
+      document.removeEventListener("visibilitychange", onVis)
+    }
+  }, [syncTimersNow])
 
   const formatTime = useCallback((seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -583,6 +652,10 @@ export function FitnessApp() {
     setIsSetActive(false)
     setIsResting(false)
     setIsPaused(false)
+    setStartedAtMsRef.current = null
+    restStartedAtMsRef.current = null
+    setBaseSecRef.current = 0
+    restBaseSecRef.current = 0
     setRestTime(0)
     setSetTime(0)
     setPostSaveComparison(null)
@@ -648,7 +721,7 @@ export function FitnessApp() {
 
   const startSet = () => {
     if (isPaused) return
-    const restToAttach = restTimeRef.current
+    const restToAttach = computeRestElapsedSec()
     if (isSetActive) return
 
     setSessionLogs((prev) => {
@@ -662,8 +735,12 @@ export function FitnessApp() {
     })
 
     setIsResting(false)
+    restBaseSecRef.current = 0
+    restStartedAtMsRef.current = null
     setRestTime(0)
     setSetTime(0)
+    setBaseSecRef.current = 0
+    setStartedAtMsRef.current = Date.now()
     setIsSetActive(true)
   }
 
@@ -671,31 +748,10 @@ export function FitnessApp() {
     if (isPaused) return
     if (!currentExercise) return
     const ended = new Date()
-    const duration = setTimeRef.current
-
-    const name = currentExercise.name
-    const [w1, w2, w3] = currentExercise.weights
-    const forExercise = sessionLogs.filter((l) => l.exerciseName === name)
-    const lastInSession = forExercise.length ? forExercise[forExercise.length - 1] : null
-    const setIndex0 = forExercise.length
-    const lastSess = findLastExerciseSession(savedWorkoutsList, name)
-    const lastTimeThisSet = lastSess?.sets[setIndex0]
-
-    let targetW: number
-    if (lastInSession) targetW = lastInSession.weight
-    else if (lastTimeThisSet) targetW = lastTimeThisSet.weight
-    else targetW = w1
-
-    const near = (x: number, y: number) => Math.abs(x - y) < 1e-6
-    let preset: number | null = null
-    let customW = ""
-    if (near(targetW, w1)) preset = w1
-    else if (near(targetW, w2)) preset = w2
-    else if (near(targetW, w3)) preset = w3
-    else {
-      const rounded = Math.round(targetW * 10) / 10
-      customW = String(rounded)
-    }
+    const duration = computeSetElapsedSec()
+    setBaseSecRef.current = duration
+    setStartedAtMsRef.current = null
+    setSetTime(duration)
 
     setPendingAfterStop({
       exerciseId: currentExercise.id,
@@ -705,13 +761,11 @@ export function FitnessApp() {
     })
     setIsSetActive(false)
     setIsResting(true)
+    restBaseSecRef.current = 0
+    restStartedAtMsRef.current = Date.now()
     setRestTime(0)
     setShowLogForm(true)
-    setSelectedWeight(preset)
-    setCustomWeight(customW)
-    setShowCustomReps(false)
-    const baseReps = getSuggestedRepsForWeight(name, targetW, sessionLogs, savedWorkoutsList)
-    setReps(String(baseReps))
+    applyExerciseDefaultsForLogging(currentExercise)
   }
 
   const saveSet = () => {
@@ -786,6 +840,7 @@ export function FitnessApp() {
   const selectWeight = (weight: number) => {
     setSelectedWeight(weight)
     setCustomWeight("")
+    setShowCustomWeight(false)
     if (pendingAfterStop) {
       const nextReps = getSuggestedRepsForWeight(
         pendingAfterStop.exerciseName,
@@ -800,6 +855,7 @@ export function FitnessApp() {
   const handleCustomWeight = (value: string) => {
     setCustomWeight(value)
     setSelectedWeight(null)
+    setShowCustomWeight(true)
     if (pendingAfterStop) {
       const w = parseFloat(value)
       if (Number.isFinite(w) && w > 0) {
@@ -835,6 +891,39 @@ export function FitnessApp() {
   const logExercise = pendingAfterStop
     ? exercises.find((e) => e.id === pendingAfterStop.exerciseId) ?? null
     : null
+
+  const applyExerciseDefaultsForLogging = useCallback(
+    (exercise: StoredExercise) => {
+      const name = exercise.name
+      const [w1, w2, w3] = exercise.weights
+      const forExercise = sessionLogs.filter((l) => l.exerciseName === name)
+      const lastInSession = forExercise.length ? forExercise[forExercise.length - 1] : null
+      const setIndex0 = forExercise.length
+      const lastSess = findLastExerciseSession(savedWorkoutsList, name)
+      const lastTimeThisSet = lastSess?.sets[setIndex0]
+
+      let targetW: number
+      if (lastInSession) targetW = lastInSession.weight
+      else if (lastTimeThisSet) targetW = lastTimeThisSet.weight
+      else targetW = w1
+
+      const near = (x: number, y: number) => Math.abs(x - y) < 1e-6
+      let preset: number | null = null
+      let customW = ""
+      if (near(targetW, w1)) preset = w1
+      else if (near(targetW, w2)) preset = w2
+      else if (near(targetW, w3)) preset = w3
+      else customW = String(Math.round(targetW * 10) / 10)
+
+      setSelectedWeight(preset)
+      setCustomWeight(customW)
+      setShowCustomWeight(false)
+      setShowCustomReps(false)
+      const baseReps = getSuggestedRepsForWeight(name, targetW, sessionLogs, savedWorkoutsList)
+      setReps(String(baseReps))
+    },
+    [savedWorkoutsList, sessionLogs],
+  )
 
   const finishAndSaveWorkout = useCallback(() => {
     if (showLogForm) {
@@ -1718,15 +1807,21 @@ export function FitnessApp() {
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
       {isSetActive && !isPaused && !showLogForm ? (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black px-5">
-          <p className="mb-6 text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
-          <p className="mb-6 text-center text-lg font-semibold text-white/90">
-            {currentExercise?.name ?? "Exercise"}
-          </p>
-          <p className="text-center font-mono text-7xl font-bold tabular-nums text-white sm:text-8xl">
-            {formatTime(setTime)}
-          </p>
-          <div className="mt-10 w-full max-w-xs">
+        <div className="absolute inset-0 z-50 bg-black px-5">
+          <div className="absolute left-0 right-0 top-10 flex flex-col items-center">
+            <p className="text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
+            <p className="mt-3 text-center text-lg font-semibold text-white/90">
+              {currentExercise?.name ?? "Exercise"}
+            </p>
+          </div>
+
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="text-center font-mono text-7xl font-bold tabular-nums text-white sm:text-8xl">
+              {formatTime(setTime)}
+            </p>
+          </div>
+
+          <div className="absolute bottom-10 left-0 right-0 mx-auto w-full max-w-xs px-5">
             <Button
               type="button"
               onClick={stopSet}
@@ -1746,7 +1841,7 @@ export function FitnessApp() {
             variant="ghost"
             size="icon"
             onClick={openPause}
-            aria-label="Pause workout"
+            aria-label="End session"
           >
             <ArrowLeft className="size-5" />
           </Button>
@@ -1765,7 +1860,7 @@ export function FitnessApp() {
           className="shrink-0 gap-1.5"
         >
           <Pause className="size-4" />
-          Pause
+          End Session
         </Button>
       </div>
 
@@ -2201,6 +2296,88 @@ export function FitnessApp() {
           className="absolute inset-0 z-20 flex flex-col bg-background/98 p-4 pt-6"
           style={{ pointerEvents: "auto" }}
         >
+          {showLogChangeExerciseSheet && (
+            <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/30 p-0">
+              <button
+                type="button"
+                className="absolute inset-0 cursor-default"
+                aria-label="Close exercise picker"
+                onClick={() => setShowLogChangeExerciseSheet(false)}
+              />
+              <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-base font-semibold text-foreground">Pick exercise</h3>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => setShowLogChangeExerciseSheet(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+
+                <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
+                  {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+                    <Button
+                      key={t}
+                      type="button"
+                      variant={workoutTab === t ? "default" : "secondary"}
+                      size="sm"
+                      className={cn(
+                        "h-8 rounded-full px-3 text-xs",
+                        workoutTab === t && "bg-primary text-primary-foreground",
+                      )}
+                      onClick={() => setWorkoutTab(t)}
+                    >
+                      {t}
+                    </Button>
+                  ))}
+                </div>
+
+                <div className="mt-3 max-h-[55vh] overflow-y-auto pr-1">
+                  {groupExercisesForUI(exercises)
+                    .filter((g) => (workoutTab === "All" ? true : g.label === workoutTab))
+                    .map((group) => (
+                      <div key={group.label} className="mb-4">
+                        {workoutTab === "All" ? (
+                          <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {group.label === "Unassigned" ? "Unassigned" : group.label}
+                          </p>
+                        ) : null}
+                        <div className="space-y-2">
+                          {group.items.map((ex) => (
+                            <Button
+                              key={ex.id}
+                              type="button"
+                              variant="secondary"
+                              className="h-12 w-full justify-start rounded-xl px-4 text-left font-semibold"
+                              onClick={() => {
+                                setPendingAfterStop((prev) =>
+                                  prev
+                                    ? { ...prev, exerciseId: ex.id, exerciseName: ex.name }
+                                    : prev,
+                                )
+                                setCurrentExerciseId(ex.id)
+                                setSessionExerciseIds((prev) =>
+                                  prev.includes(ex.id) ? prev : [...prev, ex.id],
+                                )
+                                applyExerciseDefaultsForLogging(ex)
+                                setShowLogChangeExerciseSheet(false)
+                              }}
+                            >
+                              {ex.name}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="mb-4 flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
               <span className="text-sm text-muted-foreground">
@@ -2223,6 +2400,18 @@ export function FitnessApp() {
           </div>
           <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
           <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
+          <div className="mb-3 flex justify-center">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="rounded-full"
+              onClick={() => setShowLogChangeExerciseSheet(true)}
+              disabled={isPaused}
+            >
+              Change exercise
+            </Button>
+          </div>
           <div className="mb-4 space-y-1 text-center text-sm text-muted-foreground">
             <p>
               <span className="text-foreground">Current set {pendingLogSetNumber}</span>
@@ -2246,7 +2435,7 @@ export function FitnessApp() {
             }}
           >
             <div className="mb-4">
-              <span className="mb-2 block text-sm font-medium text-muted-foreground">Weight (kg)</span>
+              <span className="mb-2 block text-sm font-medium text-muted-foreground">Weight</span>
               <div className="grid grid-cols-3 gap-2">
                 {logExercise.weights.map((w, i) => (
                   <Button
@@ -2254,7 +2443,7 @@ export function FitnessApp() {
                     type="button"
                     variant={selectedWeight === w ? "default" : "secondary"}
                     className={cn(
-                      "h-12 text-sm font-semibold",
+                      "h-12 rounded-full text-sm font-semibold",
                       selectedWeight === w && "bg-primary text-primary-foreground",
                     )}
                     onClick={() => selectWeight(w)}
@@ -2263,16 +2452,83 @@ export function FitnessApp() {
                   </Button>
                 ))}
               </div>
-              <Input
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step="0.5"
-                placeholder="Custom weight (kg)"
-                value={customWeight}
-                onChange={(e) => handleCustomWeight(e.target.value)}
-                className="mt-2 h-11 text-center text-base"
-              />
+              <div className="mt-2 flex items-center justify-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
+                  onClick={() => {
+                    const base =
+                      selectedWeight ??
+                      (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
+                    const next = Math.max(0, Math.round(base - 1))
+                    selectWeight(next)
+                  }}
+                  aria-label="Decrease weight"
+                >
+                  −
+                </Button>
+
+                {!showCustomWeight ? (
+                  <div
+                    className="px-1 text-center"
+                    onClick={() => {
+                      const base =
+                        selectedWeight ??
+                        (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
+                      setCustomWeight(String(Math.max(0, Math.round(base))))
+                      setSelectedWeight(null)
+                      setShowCustomWeight(true)
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Enter custom weight"
+                  >
+                    <div className="text-4xl font-bold tabular-nums text-foreground leading-none">
+                      {(() => {
+                        const base =
+                          selectedWeight ??
+                          (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
+                        return Math.max(0, Math.round(base))
+                      })()}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground leading-none">kg</div>
+                  </div>
+                ) : (
+                  <Input
+                    ref={customWeightInputRef}
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="1"
+                    placeholder="kg"
+                    value={customWeight}
+                    onChange={(e) => handleCustomWeight(e.target.value)}
+                    onBlur={() => {
+                      const w = parseFloat(customWeight)
+                      const next = Number.isFinite(w) ? Math.max(0, w) : 0
+                      selectWeight(next)
+                    }}
+                    className="h-14 flex-1 rounded-2xl text-center text-xl font-bold tabular-nums"
+                  />
+                )}
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
+                  onClick={() => {
+                    const base =
+                      selectedWeight ??
+                      (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
+                    const next = Math.max(0, Math.round(base + 1))
+                    selectWeight(next)
+                  }}
+                  aria-label="Increase weight"
+                >
+                  +
+                </Button>
+              </div>
             </div>
             <div className="mb-2">
               <span className="text-sm font-medium text-muted-foreground">Reps</span>
@@ -2359,26 +2615,23 @@ export function FitnessApp() {
                 )}
               </div>
             </div>
-            <p className="mb-3 text-center text-xs text-muted-foreground">
-              Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} (
-              {formatTime(pendingAfterStop.setDurationSec)} of work)
+            <Button
+              type="submit"
+              size="lg"
+              className="mt-4 h-12 w-full rounded-xl text-base font-semibold"
+              disabled={
+                (selectedWeight == null && !customWeight.trim()) ||
+                !reps.trim() ||
+                !Number.isFinite(parseInt(reps, 10)) ||
+                parseInt(reps, 10) < 1
+              }
+            >
+              <Check className="mr-2 size-5" />
+              Save set
+            </Button>
+            <p className="mt-3 text-center text-xs text-muted-foreground">
+              Set finished at {formatClock(pendingAfterStop.setEndedAt.toISOString())} ({formatTime(pendingAfterStop.setDurationSec)} work)
             </p>
-            <div className="mt-auto">
-              <Button
-                type="submit"
-                size="lg"
-                className="h-12 w-full rounded-xl text-base font-semibold"
-                disabled={
-                  (selectedWeight == null && !customWeight.trim()) ||
-                  !reps.trim() ||
-                  !Number.isFinite(parseInt(reps, 10)) ||
-                  parseInt(reps, 10) < 1
-                }
-              >
-                <Check className="mr-2 size-5" />
-                Save
-              </Button>
-            </div>
           </form>
         </div>
       )}
