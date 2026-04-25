@@ -40,7 +40,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="font-sans antialiased">
+      <body className="font-sans antialiased pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-[env(safe-area-inset-bottom,0px)]">
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
