@@ -39,10 +39,21 @@ import {
   updateSavedWorkoutName,
 } from "@/lib/saved-workouts-storage"
 import { findLastExerciseSession, compareSetToPrevious } from "@/lib/exercise-memory"
+import {
+  deleteProgram,
+  loadPrograms,
+  newProgramId,
+  newProgramItemId,
+  upsertProgram,
+  type Program,
+} from "@/lib/programs-storage"
 
 type Screen =
   | "home"
   | "chooseFirstExercise"
+  | "chooseWorkoutMode"
+  | "programs"
+  | "programEditor"
   | "settings"
   | "workout"
   | "workoutSummary"
@@ -371,6 +382,9 @@ export function FitnessApp() {
   const [exercisesReady, setExercisesReady] = useState(false)
 
   const [savedWorkoutsList, setSavedWorkoutsList] = useState<SavedWorkout[]>([])
+  const [programsList, setProgramsList] = useState<Program[]>([])
+  const [editingProgram, setEditingProgram] = useState<Program | null>(null)
+  const [activeProgram, setActiveProgram] = useState<Program | null>(null)
   const [historyDetailWorkout, setHistoryDetailWorkout] = useState<SavedWorkout | null>(null)
   const [historyEditingId, setHistoryEditingId] = useState<string | null>(null)
   const [historyDraftName, setHistoryDraftName] = useState("")
@@ -483,6 +497,12 @@ export function FitnessApp() {
     }
   }, [screen])
 
+  useEffect(() => {
+    if (screen === "programs" || screen === "programEditor") {
+      setProgramsList(loadPrograms())
+    }
+  }, [screen])
+
   const sortedSavedWorkouts = useMemo(() => {
     return [...savedWorkoutsList].sort(
       (a, b) => new Date(b.sessionEndedAt).getTime() - new Date(a.sessionEndedAt).getTime(),
@@ -509,6 +529,19 @@ export function FitnessApp() {
     if (!currentExerciseSessionSets.length) return null
     return currentExerciseSessionSets[currentExerciseSessionSets.length - 1]
   }, [currentExerciseSessionSets])
+
+  const programProgress = useMemo(() => {
+    if (!activeProgram) return null
+    const setsByExerciseId = new Map<string, number>()
+    for (const l of sessionLogs) {
+      setsByExerciseId.set(l.exerciseId, (setsByExerciseId.get(l.exerciseId) ?? 0) + 1)
+    }
+    const next = activeProgram.items.find((it) => {
+      const done = setsByExerciseId.get(it.exerciseId) ?? 0
+      return done < it.targetSets
+    })
+    return { setsByExerciseId, next }
+  }, [activeProgram, sessionLogs])
 
   const lastSessionForCurrentExercise = useMemo(() => {
     if (!currentExercise) return null
@@ -663,6 +696,7 @@ export function FitnessApp() {
     setCurrentExerciseId(null)
     setSessionExerciseIds([])
     setShowSwitchSheet(false)
+    setActiveProgram(null)
     setSessionLogs([])
     setPendingAfterStop(null)
     setShowLogForm(false)
@@ -709,7 +743,7 @@ export function FitnessApp() {
     setSessionExerciseIds([])
     setShowSwitchSheet(false)
     setIsPaused(false)
-    setScreen("chooseFirstExercise")
+    setScreen("chooseWorkoutMode")
   }
 
   /** Settings only: does not clear an in-progress workout (none reachable from here today) */
@@ -1098,6 +1132,270 @@ export function FitnessApp() {
         >
           Workout History
         </Button>
+        <Button
+          type="button"
+          variant="link"
+          onClick={() => setScreen("programs")}
+          className="mt-2 text-sm font-normal text-muted-foreground underline-offset-4 hover:text-foreground"
+        >
+          Programs
+        </Button>
+      </div>
+    )
+  }
+
+  // —— Programs (list)
+  if (screen === "programs") {
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button type="button" variant="ghost" size="icon" onClick={() => setScreen("home")} aria-label="Back to home">
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Programs</h1>
+        </header>
+
+        <div className="mx-auto w-full max-w-md space-y-3">
+          <Button
+            type="button"
+            className="h-12 w-full rounded-xl text-base font-semibold"
+            onClick={() => {
+              const now = new Date().toISOString()
+              const p: Program = {
+                id: newProgramId(),
+                name: "New program",
+                createdAt: now,
+                updatedAt: now,
+                items: [],
+              }
+              setEditingProgram(p)
+              setScreen("programEditor")
+            }}
+          >
+            <Plus className="mr-2 size-5" />
+            New program
+          </Button>
+
+          {programsList.length === 0 ? (
+            <p className="mt-8 text-center text-sm text-muted-foreground">No programs yet</p>
+          ) : (
+            <ul className="space-y-2">
+              {programsList.map((p) => (
+                <li key={p.id} className="rounded-xl border border-border bg-card p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-foreground truncate">{p.name}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {p.items.length} exercise{p.items.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground"
+                        onClick={() => {
+                          setEditingProgram(p)
+                          setScreen("programEditor")
+                        }}
+                        aria-label="Edit program"
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground"
+                        onClick={() => {
+                          if (typeof window !== "undefined" && !window.confirm("Delete this program?")) return
+                          deleteProgram(p.id)
+                          setProgramsList(loadPrograms())
+                        }}
+                        aria-label="Delete program"
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // —— Program editor (minimal)
+  if (screen === "programEditor") {
+    if (!editingProgram) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6">
+          <p className="text-sm text-muted-foreground">Program not found.</p>
+          <Button type="button" variant="outline" onClick={() => setScreen("programs")}>
+            Back to Programs
+          </Button>
+        </div>
+      )
+    }
+    const p = editingProgram
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button type="button" variant="ghost" size="icon" onClick={() => setScreen("programs")} aria-label="Back to programs">
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Edit program</h1>
+        </header>
+
+        <div className="mx-auto w-full max-w-md space-y-4 pb-8">
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <Label htmlFor="prog-name" className="text-xs text-muted-foreground">
+              Program name
+            </Label>
+            <Input
+              id="prog-name"
+              className="mt-1 h-11"
+              value={p.name}
+              onChange={(e) => setEditingProgram({ ...p, name: e.target.value })}
+            />
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-foreground">Exercises</h2>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  if (exercises.length === 0) return
+                  const ex = exercises[0]
+                  setEditingProgram({
+                    ...p,
+                    items: [
+                      ...p.items,
+                      {
+                        id: newProgramItemId(),
+                        exerciseId: ex.id,
+                        exerciseName: ex.name,
+                        targetSets: 3,
+                        targetReps: 10,
+                        targetWeight: null,
+                      },
+                    ],
+                  })
+                }}
+              >
+                <Plus className="mr-1 size-4" />
+                Add
+              </Button>
+            </div>
+
+            {p.items.length === 0 ? (
+              <p className="mt-3 text-sm text-muted-foreground">Add exercises to plan your session.</p>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {p.items.map((it, idx) => {
+                  const ex = exercises.find((e) => e.id === it.exerciseId) ?? null
+                  const name = ex?.name ?? it.exerciseName
+                  return (
+                    <div key={it.id} className="rounded-xl border border-border bg-background/60 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="font-semibold text-foreground">
+                          {idx + 1}. {name}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground"
+                          onClick={() =>
+                            setEditingProgram({ ...p, items: p.items.filter((x) => x.id !== it.id) })
+                          }
+                          aria-label="Remove exercise from program"
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Target sets</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            className="mt-1 h-10"
+                            value={String(it.targetSets)}
+                            onChange={(e) => {
+                              const v = Math.max(1, parseInt(e.target.value || "0", 10) || 1)
+                              setEditingProgram({
+                                ...p,
+                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetSets: v } : x)),
+                              })
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Target reps</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            className="mt-1 h-10"
+                            value={String(it.targetReps)}
+                            onChange={(e) => {
+                              const v = Math.max(1, parseInt(e.target.value || "0", 10) || 1)
+                              setEditingProgram({
+                                ...p,
+                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetReps: v } : x)),
+                              })
+                            }}
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label className="text-xs text-muted-foreground">Target weight (optional kg)</Label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step="0.5"
+                            className="mt-1 h-10"
+                            value={it.targetWeight == null ? "" : String(it.targetWeight)}
+                            onChange={(e) => {
+                              const raw = e.target.value.trim()
+                              const tw = raw === "" ? null : parseFloat(raw)
+                              setEditingProgram({
+                                ...p,
+                                items: p.items.map((x) => (x.id === it.id ? { ...x, targetWeight: Number.isFinite(tw as any) ? (tw as any) : null } : x)),
+                              })
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <Button
+            type="button"
+            className="h-12 w-full rounded-xl text-base font-semibold"
+            onClick={() => {
+              upsertProgram(p)
+              setProgramsList(loadPrograms())
+              setScreen("programs")
+            }}
+            disabled={!p.name.trim()}
+          >
+            Save program
+          </Button>
+        </div>
       </div>
     )
   }
@@ -1170,6 +1468,87 @@ export function FitnessApp() {
                   </div>
                 </section>
               ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // —— Choose workout mode (Free vs Program)
+  if (screen === "chooseWorkoutMode") {
+    return (
+      <div className="flex min-h-screen flex-col bg-background p-4">
+        <header className="mb-4 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              resetWorkoutSession()
+              setScreen("home")
+            }}
+            aria-label="Back to home"
+          >
+            <ArrowLeft className="size-5" />
+          </Button>
+          <h1 className="text-lg font-semibold">Start workout</h1>
+        </header>
+
+        <div className="mx-auto w-full max-w-md space-y-3">
+          <Button
+            type="button"
+            size="lg"
+            className="h-14 w-full rounded-2xl text-base font-semibold"
+            onClick={() => {
+              setActiveProgram(null)
+              setScreen("chooseFirstExercise")
+            }}
+          >
+            Free workout
+          </Button>
+
+          <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+            <p className="text-sm font-semibold text-foreground">Start from program</p>
+            <p className="mt-1 text-xs text-muted-foreground">Shows the next planned exercise/sets while you train.</p>
+
+            {programsList.length === 0 ? (
+              <div className="mt-3">
+                <p className="text-sm text-muted-foreground">No programs yet.</p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="mt-3 h-11 w-full rounded-xl"
+                  onClick={() => setScreen("programs")}
+                >
+                  Create a program
+                </Button>
+              </div>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {programsList.map((p) => (
+                  <Button
+                    key={p.id}
+                    type="button"
+                    variant="secondary"
+                    className="h-12 w-full justify-between rounded-xl px-4"
+                    onClick={() => {
+                      setActiveProgram(p)
+                      // Start with the first planned exercise if available, otherwise choose manually.
+                      const first = p.items[0]?.exerciseId
+                      if (first) {
+                        activateExercise(first)
+                        setScreen("workout")
+                      } else {
+                        setScreen("chooseFirstExercise")
+                      }
+                    }}
+                  >
+                    <span className="font-semibold">{p.name}</span>
+                    <span className="text-xs text-muted-foreground">{p.items.length} ex</span>
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2017,6 +2396,33 @@ export function FitnessApp() {
       {/* Current exercise header (always visible) */}
       <div className="border-b border-border px-4 py-3">
         <div className="mx-auto w-full max-w-md">
+          {activeProgram && programProgress?.next ? (
+            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Next planned</p>
+              <p className="mt-0.5 font-semibold text-foreground">
+                {(() => {
+                  const ex = exercises.find((e) => e.id === programProgress.next!.exerciseId)
+                  return ex?.name ?? programProgress.next!.exerciseName
+                })()}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {(() => {
+                  const it = programProgress.next!
+                  const done = programProgress.setsByExerciseId.get(it.exerciseId) ?? 0
+                  const remaining = Math.max(0, it.targetSets - done)
+                  const tw = it.targetWeight != null ? ` @ ${it.targetWeight} kg` : ""
+                  return `${remaining} set${remaining === 1 ? "" : "s"} left · target ${it.targetReps} reps${tw}`
+                })()}
+              </p>
+            </div>
+          ) : activeProgram ? (
+            <div className="mb-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Program</p>
+              <p className="mt-0.5 font-semibold text-foreground">{activeProgram.name}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">All planned sets completed.</p>
+            </div>
+          ) : null}
+
           <p className="text-center text-2xl font-semibold text-foreground">{currentExercise?.name}</p>
           <p className="mt-1 text-center text-sm text-muted-foreground">
             {currentExerciseLastSet
