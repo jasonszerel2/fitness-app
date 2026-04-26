@@ -55,6 +55,8 @@ import {
   type ProgramExercise,
 } from "@/lib/programs-storage"
 import { applyFitlogImport, downloadFitlogExportJson } from "@/lib/fitlog-backup"
+import { parseOnboardingSnapshot } from "@/lib/onboarding-progress"
+import { OnboardingSpotlight, useOnboardingProgress } from "@/components/onboarding-spotlight"
 
 type Screen =
   | "home"
@@ -503,76 +505,6 @@ function WorkoutPauseOverlay({
   )
 }
 
-const ONBOARD_STORAGE_PREFIX = "fitlog-onboard-v1:"
-
-function isOnboardingHintDismissed(key: string): boolean {
-  if (typeof window === "undefined") return true
-  try {
-    return window.localStorage.getItem(ONBOARD_STORAGE_PREFIX + key) === "1"
-  } catch {
-    return true
-  }
-}
-
-function dismissOnboardingHint(key: string) {
-  try {
-    window.localStorage.setItem(ONBOARD_STORAGE_PREFIX + key, "1")
-  } catch {
-    // ignore quota / private mode
-  }
-}
-
-function OnboardingHint({
-  hintKey,
-  text,
-  className,
-  autoHideMs,
-  tone = "default",
-}: {
-  hintKey: string
-  text: string
-  className?: string
-  autoHideMs?: number
-  tone?: "default" | "onDark"
-}) {
-  const [visible, setVisible] = useState(false)
-  useEffect(() => {
-    setVisible(!isOnboardingHintDismissed(hintKey))
-  }, [hintKey])
-  const close = useCallback(() => {
-    dismissOnboardingHint(hintKey)
-    setVisible(false)
-  }, [hintKey])
-  useEffect(() => {
-    if (!visible || autoHideMs == null || autoHideMs <= 0) return
-    const id = window.setTimeout(close, autoHideMs)
-    return () => window.clearTimeout(id)
-  }, [visible, autoHideMs, close])
-  if (!visible) return null
-  const pillTone =
-    tone === "onDark"
-      ? "border-white/25 bg-black/55 text-white shadow-lg backdrop-blur-sm ring-1 ring-white/10"
-      : "border-border bg-card text-card-foreground shadow-md ring-1 ring-black/5 dark:ring-white/10"
-  return (
-    <div className={cn("pointer-events-none", className)}>
-      <button
-        type="button"
-        onClick={close}
-        aria-label="Dismiss tip"
-        className={cn(
-          "pointer-events-auto flex max-w-[min(92vw,280px)] items-start gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-xs leading-snug",
-          pillTone,
-        )}
-      >
-        <span className="min-w-0 flex-1">{text}</span>
-        <span className="shrink-0 opacity-70" aria-hidden>
-          ×
-        </span>
-      </button>
-    </div>
-  )
-}
-
 export function FitnessApp() {
   const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
@@ -651,6 +583,20 @@ export function FitnessApp() {
   const [activeProgram, setActiveProgram] = useState<Program | null>(null)
   const [lastAddedProgramExerciseId, setLastAddedProgramExerciseId] = useState<string | null>(null)
   const lastAddedProgramExerciseRef = useRef<HTMLDivElement | null>(null)
+  const onboardHomeSettingsRef = useRef<HTMLDivElement | null>(null)
+  const onboardHomeStartWorkoutRef = useRef<HTMLDivElement | null>(null)
+  const onboardWorkoutExercisePickerRef = useRef<HTMLDivElement | null>(null)
+  const onboardLogWeightRef = useRef<HTMLDivElement | null>(null)
+  const onboardLogNoteRef = useRef<HTMLDivElement | null>(null)
+  const onboardSaveSetRef = useRef<HTMLDivElement | null>(null)
+  const onboardRestTimerRef = useRef<HTMLDivElement | null>(null)
+  const onboardHistoryHeaderRef = useRef<HTMLElement | null>(null)
+  const onboardHistorySaveAsProgramRef = useRef<HTMLDivElement | null>(null)
+  const onboardProgramsPrimaryRef = useRef<HTMLDivElement | null>(null)
+
+  const onboardingSnap = useOnboardingProgress()
+  const ob = parseOnboardingSnapshot(onboardingSnap)
+
   const [historyDetailWorkout, setHistoryDetailWorkout] = useState<SavedWorkout | null>(null)
   const [historyEditingId, setHistoryEditingId] = useState<string | null>(null)
   const [historyDraftName, setHistoryDraftName] = useState("")
@@ -1536,32 +1482,39 @@ export function FitnessApp() {
 
   // —— Home
   if (screen === "home") {
+    const showOnboardHomeSettings = !ob.done && ob.step === 0
+    const showOnboardHomeStart = !ob.done && ob.step === 1
     return (
+      <>
       <div className="relative flex min-h-screen flex-col items-center justify-center bg-background p-6">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={() => {
-            setScreen("settings")
-            resetDraft()
-          }}
-          className="absolute right-4 top-4 text-muted-foreground hover:text-foreground"
-          aria-label="Open settings"
-        >
-          <Settings className="size-5" />
-        </Button>
+        <div ref={onboardHomeSettingsRef} className="absolute right-4 top-4">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              setScreen("settings")
+              resetDraft()
+            }}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Open settings"
+          >
+            <Settings className="size-5" />
+          </Button>
+        </div>
 
-        <Button
-          type="button"
-          onClick={startWorkout}
-          size="lg"
-          disabled={exercises.length === 0}
-          className="h-20 min-w-[16rem] rounded-2xl bg-primary px-10 text-lg font-semibold text-primary-foreground transition-transform active:scale-95 disabled:opacity-40"
-        >
-          <Play className="mr-2 size-6 shrink-0" />
-          Start Workout
-        </Button>
+        <div ref={onboardHomeStartWorkoutRef}>
+          <Button
+            type="button"
+            onClick={startWorkout}
+            size="lg"
+            disabled={exercises.length === 0}
+            className="h-20 min-w-[16rem] rounded-2xl bg-primary px-10 text-lg font-semibold text-primary-foreground transition-transform active:scale-95 disabled:opacity-40"
+          >
+            <Play className="mr-2 size-6 shrink-0" />
+            Start Workout
+          </Button>
+        </div>
         {exercises.length === 0 && (
           <p className="mt-4 max-w-xs text-center text-sm text-muted-foreground">
             Add exercises in settings (the gear above) before you can start.
@@ -1584,12 +1537,27 @@ export function FitnessApp() {
           Programs
         </Button>
       </div>
+      <OnboardingSpotlight
+        show={showOnboardHomeSettings}
+        targetRef={onboardHomeSettingsRef}
+        message="Start in settings. Basic exercises are ready, and you can add more anytime."
+        stepKey={ob.step}
+      />
+      <OnboardingSpotlight
+        show={showOnboardHomeStart}
+        targetRef={onboardHomeStartWorkoutRef}
+        message="Start a workout here."
+        stepKey={ob.step}
+      />
+      </>
     )
   }
 
   // —— Programs (list)
   if (screen === "programs") {
+    const showOnboardPrograms = !ob.done && ob.step === 9
     return (
+      <>
       <div className="flex min-h-screen flex-col bg-background p-4">
         <header className="mb-4 flex items-center gap-2">
           <Button type="button" variant="ghost" size="icon" onClick={() => setScreen("home")} aria-label="Back to home">
@@ -1599,25 +1567,27 @@ export function FitnessApp() {
         </header>
 
         <div className="mx-auto w-full max-w-md space-y-3">
-          <Button
-            type="button"
-            className="h-12 w-full rounded-xl text-base font-semibold"
-            onClick={() => {
-              const now = new Date().toISOString()
-              const p: Program = {
-                id: newProgramId(),
-                name: "New program",
-                createdAt: now,
-                updatedAt: now,
-                exercises: [],
-              }
-              setEditingProgram(p)
-              setScreen("programEditor")
-            }}
-          >
-            <Plus className="mr-2 size-5" />
-            New program
-          </Button>
+          <div ref={onboardProgramsPrimaryRef}>
+            <Button
+              type="button"
+              className="h-12 w-full rounded-xl text-base font-semibold"
+              onClick={() => {
+                const now = new Date().toISOString()
+                const p: Program = {
+                  id: newProgramId(),
+                  name: "New program",
+                  createdAt: now,
+                  updatedAt: now,
+                  exercises: [],
+                }
+                setEditingProgram(p)
+                setScreen("programEditor")
+              }}
+            >
+              <Plus className="mr-2 size-5" />
+              New program
+            </Button>
+          </div>
 
           {programsList.length === 0 ? (
             <p className="mt-8 text-center text-sm text-muted-foreground">No programs yet</p>
@@ -1668,6 +1638,13 @@ export function FitnessApp() {
           )}
         </div>
       </div>
+      <OnboardingSpotlight
+        show={showOnboardPrograms}
+        targetRef={onboardProgramsPrimaryRef}
+        message="Create or follow planned workouts."
+        stepKey={ob.step}
+      />
+      </>
     )
   }
 
@@ -2360,9 +2337,11 @@ export function FitnessApp() {
 
   // —— Workout History (list)
   if (screen === "workoutHistory") {
+    const showOnboardHistory = !ob.done && ob.step === 7
     return (
+      <>
       <div className="flex min-h-screen flex-col bg-background p-4">
-        <header className="mb-4 flex items-center gap-2">
+        <header ref={onboardHistoryHeaderRef} className="mb-4 flex items-center gap-2">
           <Button
             type="button"
             variant="ghost"
@@ -2525,6 +2504,13 @@ export function FitnessApp() {
           Back to Home
         </Button>
       </div>
+      <OnboardingSpotlight
+        show={showOnboardHistory}
+        targetRef={onboardHistoryHeaderRef}
+        message="Your past workouts live here."
+        stepKey={ob.step}
+      />
+      </>
     )
   }
 
@@ -2541,6 +2527,7 @@ export function FitnessApp() {
       )
     }
     const w = historyDetailWorkout
+    const showOnboardSaveAsProgram = !ob.done && ob.step === 8
     return (
       <div className="flex min-h-screen flex-col bg-background p-4">
         <header className="mb-4 flex items-center gap-2">
@@ -2670,15 +2657,17 @@ export function FitnessApp() {
             {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          className="mx-auto mt-4 w-full max-w-md"
-          onClick={() => saveWorkoutAsProgram(w)}
-        >
-          <LayoutList className="mr-2 size-4" />
-          Save as Program
-        </Button>
+        <div ref={onboardHistorySaveAsProgramRef} className="mx-auto mt-4 w-full max-w-md">
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            onClick={() => saveWorkoutAsProgram(w)}
+          >
+            <LayoutList className="mr-2 size-4" />
+            Save as Program
+          </Button>
+        </div>
         <div className="mx-auto mt-6 w-full max-w-md flex-1 space-y-6 overflow-y-auto pb-8">
           {w.byExercise.map((g) => (
             <section key={g.exerciseName}>
@@ -3011,6 +3000,12 @@ export function FitnessApp() {
         >
           Back to Home
         </Button>
+        <OnboardingSpotlight
+          show={showOnboardSaveAsProgram}
+          targetRef={onboardHistorySaveAsProgramRef}
+          message="Turn workouts into reusable programs."
+          stepKey={ob.step}
+        />
       </div>
     )
   }
@@ -3530,6 +3525,54 @@ export function FitnessApp() {
     )
   }
 
+  const workoutOnboardLogReady = Boolean(showLogForm && logExercise && pendingAfterStop)
+  const workoutOnboardOverlays =
+    restNoteSheet != null || sessionSetEditSheet != null || showLogChangeExerciseSheet || showSwitchSheet
+
+  const showWorkoutOnboardSpot2 =
+    !ob.done && ob.step === 2 && !showSwitchSheet && !showLogForm && !isSetActive && !isPaused
+  const showWorkoutOnboardSpot3 =
+    !ob.done && ob.step === 3 && workoutOnboardLogReady && !workoutOnboardOverlays
+  const showWorkoutOnboardSpot4 =
+    !ob.done && ob.step === 4 && workoutOnboardLogReady && !workoutOnboardOverlays
+  const showWorkoutOnboardSpot5 =
+    !ob.done && ob.step === 5 && workoutOnboardLogReady && !workoutOnboardOverlays
+  const showWorkoutOnboardSpot6 =
+    !ob.done &&
+    ob.step === 6 &&
+    !showLogForm &&
+    !isSetActive &&
+    isResting &&
+    !isPaused &&
+    !workoutOnboardOverlays
+
+  const showWorkoutOnboardSpot =
+    showWorkoutOnboardSpot2 ||
+    showWorkoutOnboardSpot3 ||
+    showWorkoutOnboardSpot4 ||
+    showWorkoutOnboardSpot5 ||
+    showWorkoutOnboardSpot6
+
+  const workoutOnboardSpotRef = showWorkoutOnboardSpot2
+    ? onboardWorkoutExercisePickerRef
+    : showWorkoutOnboardSpot3
+      ? onboardLogWeightRef
+      : showWorkoutOnboardSpot4
+        ? onboardLogNoteRef
+        : showWorkoutOnboardSpot5
+          ? onboardSaveSetRef
+          : onboardRestTimerRef
+
+  const workoutOnboardSpotMessage = showWorkoutOnboardSpot2
+    ? "Choose or switch exercises anytime."
+    : showWorkoutOnboardSpot3
+      ? "Adjust weight and reps quickly."
+      : showWorkoutOnboardSpot4
+        ? "Add notes if something felt different."
+        : showWorkoutOnboardSpot5
+          ? "Save the set when you’re done."
+          : "Rest time keeps running between sets."
+
   return (
     <div className="relative flex min-h-screen flex-col bg-background">
       {isSetActive && !isPaused && !showLogForm ? (
@@ -3545,14 +3588,7 @@ export function FitnessApp() {
         >
           <div className="flex shrink-0 flex-col items-center px-5 pt-2">
             <p className="text-xs font-semibold tracking-[0.35em] text-white/70">IN SET</p>
-            <OnboardingHint
-              hintKey="inset-timer"
-              text="Timer runs while you train"
-              tone="onDark"
-              autoHideMs={4200}
-              className="mt-2 flex justify-center"
-            />
-            <p className="mt-2 text-center text-lg font-semibold text-white/90">
+            <p className="mt-3 text-center text-lg font-semibold text-white/90">
               {currentExercise?.name ?? "Exercise"}
             </p>
           </div>
@@ -3613,18 +3649,11 @@ export function FitnessApp() {
         <div className="mx-auto w-full max-w-md">
           {activeProgram ? (
             <div className="relative mb-3 rounded-xl border border-border bg-card px-3 py-3 text-sm shadow-sm">
-              <div className="relative">
-                <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Program
-                  </span>
-                  <span className="truncate text-right text-xs font-medium text-foreground">{activeProgram.name}</span>
-                </div>
-                <OnboardingHint
-                  hintKey="program-follow-set"
-                  text="Follow planned sets or adjust freely"
-                  className="absolute left-0 right-0 top-full z-10 mt-1 flex justify-center px-0"
-                />
+              <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Program
+                </span>
+                <span className="truncate text-right text-xs font-medium text-foreground">{activeProgram.name}</span>
               </div>
 
               {programProgress?.currentPlanned ? (
@@ -4026,24 +4055,26 @@ export function FitnessApp() {
         className={cn("flex min-h-0 flex-1 flex-col px-4 pt-4", showLogForm && "pointer-events-none select-none opacity-0")}
         aria-hidden={showLogForm}
       >
-        <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">Timer</p>
-        <p
-          className={cn(
-            "mt-1 text-center font-mono text-5xl font-bold tabular-nums sm:text-6xl",
-            isPaused
-              ? "text-muted-foreground"
-              : isSetActive
-                ? "text-primary"
-                : isResting
-                  ? "text-orange-400"
-                  : "text-foreground",
-          )}
-        >
-          {formatTime(isSetActive ? setTime : restTime)}
-        </p>
-        <p className="mt-1 text-center text-sm text-muted-foreground">
-          {isPaused ? "Paused" : isSetActive ? "Set" : isResting ? "Rest" : "Ready"}
-        </p>
+        <div ref={onboardRestTimerRef}>
+          <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">Timer</p>
+          <p
+            className={cn(
+              "mt-1 text-center font-mono text-5xl font-bold tabular-nums sm:text-6xl",
+              isPaused
+                ? "text-muted-foreground"
+                : isSetActive
+                  ? "text-primary"
+                  : isResting
+                    ? "text-orange-400"
+                    : "text-foreground",
+            )}
+          >
+            {formatTime(isSetActive ? setTime : restTime)}
+          </p>
+          <p className="mt-1 text-center text-sm text-muted-foreground">
+            {isPaused ? "Paused" : isSetActive ? "Set" : isResting ? "Rest" : "Ready"}
+          </p>
+        </div>
 
         {postSaveComparison && !showLogForm && (
           <div className="mt-4 text-center" role="status" aria-live="polite">
@@ -4106,11 +4137,12 @@ export function FitnessApp() {
             </Button>
           )}
 
+        <div ref={onboardWorkoutExercisePickerRef}>
           <Button
             type="button"
             variant="secondary"
             size="lg"
-            className="h-12 rounded-2xl text-base font-semibold"
+            className="h-12 w-full rounded-2xl text-base font-semibold"
             onClick={() => {
               if (showLogForm || isPaused || showQuickAddExercise) return
               setShowSwitchSheet(true)
@@ -4120,6 +4152,7 @@ export function FitnessApp() {
             <Plus className="mr-2 size-5" />
             + Add / Switch Exercise
           </Button>
+        </div>
         </div>
 
         {sessionLogs.length > 0 && (
@@ -4305,7 +4338,7 @@ export function FitnessApp() {
           </div>
           <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
           <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
-          <div className="relative z-[25] mb-3 flex justify-center">
+          <div className="mb-3 flex justify-center">
             <Button
               type="button"
               variant="secondary"
@@ -4316,11 +4349,6 @@ export function FitnessApp() {
             >
               Change exercise
             </Button>
-            <OnboardingHint
-              hintKey="log-change-exercise"
-              text="Switch exercises anytime"
-              className="absolute left-1/2 top-full z-[25] mt-1 flex -translate-x-1/2 justify-center"
-            />
           </div>
           <div className="mb-4 space-y-2 text-sm text-muted-foreground">
             <p className="text-center">
@@ -4388,12 +4416,7 @@ export function FitnessApp() {
               saveSet()
             }}
           >
-            <div className="relative z-[25] mb-4">
-              <OnboardingHint
-                hintKey="log-reps-weight"
-                text="Tap + / – to adjust quickly"
-                className="absolute right-0 bottom-full z-[25] mb-1 flex justify-end"
-              />
+            <div ref={onboardLogWeightRef} className="relative z-[25] mb-4">
               <span className="mb-2 block text-sm font-medium text-muted-foreground">Weight</span>
               <div className="grid grid-cols-3 gap-2">
                 {logExercise.weights.map((w, i) => (
@@ -4574,12 +4597,7 @@ export function FitnessApp() {
               </div>
             </div>
             </div>
-            <div className="relative z-[25] mt-4">
-              <OnboardingHint
-                hintKey="log-notes"
-                text="Add notes to remember how a set felt"
-                className="absolute left-0 right-0 bottom-full z-[25] mb-1 flex justify-center"
-              />
+            <div ref={onboardLogNoteRef} className="mt-4">
               <Label htmlFor="log-set-note" className="text-xs text-muted-foreground">
                 Note (optional)
               </Label>
@@ -4592,12 +4610,7 @@ export function FitnessApp() {
                 className="mt-1 min-h-[4.5rem] resize-none text-sm"
               />
             </div>
-            <div className="relative z-[25] mt-4">
-              <OnboardingHint
-                hintKey="log-save-set"
-                text="Save your set here"
-                className="absolute left-0 right-0 bottom-full z-[25] mb-1 flex justify-center"
-              />
+            <div ref={onboardSaveSetRef} className="mt-4">
               <Button
                 type="submit"
                 size="lg"
@@ -4928,6 +4941,13 @@ export function FitnessApp() {
           onCancel={confirmCancelWorkout}
         />
       )}
+
+      <OnboardingSpotlight
+        show={showWorkoutOnboardSpot}
+        targetRef={workoutOnboardSpotRef}
+        message={workoutOnboardSpotMessage}
+        stepKey={ob.step}
+      />
     </div>
   )
 }
