@@ -10,7 +10,12 @@ import {
   subscribeOnboarding,
 } from "@/lib/onboarding-progress"
 
+// Emergency kill switch: disable onboarding rendering/logic.
+// Keep code in place for later re-enable.
+const ONBOARDING_DISABLED = true
+
 export function useOnboardingProgress() {
+  if (ONBOARDING_DISABLED) return "1|0"
   return useSyncExternalStore(
     subscribeOnboarding,
     () => (typeof window === "undefined" ? "0|0" : onboardingSnapshot()),
@@ -35,6 +40,7 @@ export function OnboardingSpotlight({
   showNext = false,
   autoHideMs = 4200,
 }: OnboardingSpotlightProps) {
+  if (ONBOARDING_DISABLED) return null
   const [rect, setRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null)
   const [mounted, setMounted] = useState(false)
   const [render, setRender] = useState(false)
