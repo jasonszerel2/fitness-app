@@ -507,6 +507,83 @@ function WorkoutPauseOverlay({
 
 export function FitnessApp() {
   const { theme, setTheme } = useTheme()
+
+  // ---- Mobile-safe onboarding tips (v1): simple inline cards, no overlays.
+  const TIPS_SKIP_KEY = "fitlog-tips-v1-skip"
+  const tipKey = (k: string) => `fitlog-tips-v1:${k}`
+  const isTipsSkipped = () => {
+    if (typeof window === "undefined") return true
+    try {
+      return window.localStorage.getItem(TIPS_SKIP_KEY) === "1"
+    } catch {
+      return true
+    }
+  }
+  const markTipDone = (k: string) => {
+    try {
+      window.localStorage.setItem(tipKey(k), "1")
+    } catch {}
+  }
+  const skipAllTips = () => {
+    try {
+      window.localStorage.setItem(TIPS_SKIP_KEY, "1")
+    } catch {}
+  }
+
+  function InlineTip({
+    id,
+    text,
+    className,
+  }: {
+    id: string
+    text: string
+    className?: string
+  }) {
+    const [visible, setVisible] = useState(false)
+    useEffect(() => {
+      if (typeof window === "undefined") return
+      if (isTipsSkipped()) return
+      try {
+        const done = window.localStorage.getItem(tipKey(id)) === "1"
+        setVisible(!done)
+      } catch {
+        setVisible(false)
+      }
+    }, [id])
+    if (!visible) return null
+    return (
+      <div className={cn("mx-auto w-full max-w-md", className)}>
+        <div className="rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm shadow-sm">
+          <p className="text-foreground/90">{text}</p>
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 px-2 text-xs text-muted-foreground"
+              onClick={() => {
+                skipAllTips()
+                setVisible(false)
+              }}
+            >
+              Skip tips
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 px-3 text-xs"
+              onClick={() => {
+                markTipDone(id)
+                setVisible(false)
+              }}
+            >
+              Got it
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
   const [screen, setScreen] = useState<Screen>("home")
   const [exercises, setExercises] = useState<StoredExercise[]>([])
   const [workoutTab, setWorkoutTab] = useState<ExerciseTab>("All")
@@ -1503,6 +1580,12 @@ export function FitnessApp() {
           </Button>
         </div>
 
+        <InlineTip
+          id="home"
+          text="Start in settings to review your exercises, or press Start Workout to begin."
+          className="mb-4"
+        />
+
         <div ref={onboardHomeStartWorkoutRef}>
           <Button
             type="button"
@@ -1567,6 +1650,7 @@ export function FitnessApp() {
         </header>
 
         <div className="mx-auto w-full max-w-md space-y-3">
+          <InlineTip id="programs" text="Programs let you follow planned workouts." />
           <div ref={onboardProgramsPrimaryRef}>
             <Button
               type="button"
@@ -2356,6 +2440,7 @@ export function FitnessApp() {
           </Button>
           <h1 className="text-lg font-semibold">Workout History</h1>
         </header>
+        <InlineTip id="history" text="Your saved workouts and notes appear here." className="mb-3" />
         {sortedSavedWorkouts.length === 0 ? (
           <p className="mt-12 text-center text-sm text-muted-foreground">No workouts logged yet</p>
         ) : (
@@ -3028,6 +3113,12 @@ export function FitnessApp() {
           </Button>
           <h1 className="text-lg font-semibold">Exercises</h1>
         </header>
+
+        <InlineTip
+          id="settings"
+          text="Exercises are grouped by Push, Pull, and Legs. You can add or edit them anytime."
+          className="mb-4"
+        />
 
         <div className="mx-auto mb-6 w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-sm">
           <h2 className="text-sm font-semibold text-foreground">Theme</h2>
@@ -4055,6 +4146,9 @@ export function FitnessApp() {
         className={cn("flex min-h-0 flex-1 flex-col px-4 pt-4", showLogForm && "pointer-events-none select-none opacity-0")}
         aria-hidden={showLogForm}
       >
+        {!showLogForm && !isSetActive && !isPaused ? (
+          <InlineTip id="workout" text="Pick an exercise, then log sets with weight and reps." className="mb-3" />
+        ) : null}
         <div ref={onboardRestTimerRef}>
           <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">Timer</p>
           <p
@@ -4075,6 +4169,10 @@ export function FitnessApp() {
             {isPaused ? "Paused" : isSetActive ? "Set" : isResting ? "Rest" : "Ready"}
           </p>
         </div>
+
+        {isResting && !showLogForm && !isPaused && !isSetActive ? (
+          <InlineTip id="rest" text="The rest timer keeps running while you prepare your next set." className="mt-3" />
+        ) : null}
 
         {postSaveComparison && !showLogForm && (
           <div className="mt-4 text-center" role="status" aria-live="polite">
@@ -4336,6 +4434,11 @@ export function FitnessApp() {
               Pause
             </Button>
           </div>
+          <InlineTip
+            id="logset"
+            text="Use + and – to adjust quickly. Save when the set is done."
+            className="mb-3"
+          />
           <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
           <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
           <div className="mb-3 flex justify-center">
