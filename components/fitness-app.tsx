@@ -74,6 +74,13 @@ type Screen =
 type StarterLevel = "newbie" | "intermediate" | "charles"
 type ExerciseTab = "All" | "Push" | "Pull" | "Legs"
 type CountdownPhase = 3 | 2 | 1 | "GO"
+type ProgramImportRow = {
+  id: string
+  exerciseName: string
+  sets: string
+  reps: string
+  weight: string
+}
 
 /** One row in the current session’s log (in-memory, local to this app session) */
 type SessionSetLog = {
@@ -136,6 +143,71 @@ function getSuggestedRepsForWeight(
     }
   }
   return 8
+}
+
+function normalizeImportHeader(value: string) {
+  return value.trim().toLowerCase().replace(/[.:]/g, "")
+}
+
+function parseNumberish(value: string): number | null {
+  const cleaned = value.replace(",", ".").replace(/[^\d.-]/g, "")
+  if (!cleaned.trim()) return null
+  const n = parseFloat(cleaned)
+  return Number.isFinite(n) ? n : null
+}
+
+function splitImportLine(line: string): string[] {
+  if (line.includes("\t")) return line.split("\t").map((x) => x.trim())
+  if (line.includes(",")) return line.split(",").map((x) => x.trim())
+  const byWideSpace = line.trim().split(/\s{2,}/).map((x) => x.trim())
+  if (byWideSpace.length > 1) return byWideSpace
+  const tokens = line.trim().split(/\s+/)
+  const numericTail: string[] = []
+  while (tokens.length > 1 && parseNumberish(tokens[tokens.length - 1] ?? "") != null) {
+    numericTail.unshift(tokens.pop()!)
+    if (numericTail.length >= 3) break
+  }
+  return [tokens.join(" "), ...numericTail].filter(Boolean)
+}
+
+function importColumn(headers: string[], names: string[]) {
+  return headers.findIndex((h) => names.includes(normalizeImportHeader(h)))
+}
+
+function parseProgramImport(text: string): ProgramImportRow[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  if (!lines.length) return []
+
+  const first = splitImportLine(lines[0])
+  const normalized = first.map(normalizeImportHeader)
+  const hasHeader = normalized.some((h) =>
+    ["exercise", "øvelse", "sets", "sæt", "reps", "gentagelser", "weight", "vægt", "kg"].includes(h),
+  )
+
+  const headers = hasHeader ? first : []
+  const data = hasHeader ? lines.slice(1) : lines
+  const exI = hasHeader ? importColumn(headers, ["exercise", "øvelse"]) : 0
+  const setsI = hasHeader ? importColumn(headers, ["sets", "sæt"]) : 1
+  const repsI = hasHeader ? importColumn(headers, ["reps", "gentagelser"]) : 2
+  const weightI = hasHeader ? importColumn(headers, ["weight", "vægt", "kg"]) : 3
+
+  return data
+    .map((line, index) => {
+      const cells = splitImportLine(line)
+      const exerciseName = (cells[exI] ?? "").trim()
+      if (!exerciseName) return null
+      return {
+        id: `imp-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+        exerciseName,
+        sets: setsI >= 0 ? cells[setsI] ?? "" : "",
+        reps: repsI >= 0 ? cells[repsI] ?? "" : "",
+        weight: weightI >= 0 ? cells[weightI] ?? "" : "",
+      } satisfies ProgramImportRow
+    })
+    .filter((x): x is ProgramImportRow => x != null)
 }
 
 function formatSessionDate(iso: string) {
@@ -707,6 +779,10 @@ export function FitnessApp() {
   const [editingProgram, setEditingProgram] = useState<Program | null>(null)
   const [activeProgram, setActiveProgram] = useState<Program | null>(null)
   const [showProgramHistoryPicker, setShowProgramHistoryPicker] = useState(false)
+  const [showProgramImport, setShowProgramImport] = useState(false)
+  const [programImportText, setProgramImportText] = useState("")
+  const [programImportName, setProgramImportName] = useState("Imported program")
+  const [programImportRows, setProgramImportRows] = useState<ProgramImportRow[]>([])
   const [lastAddedProgramExerciseId, setLastAddedProgramExerciseId] = useState<string | null>(null)
   const lastAddedProgramExerciseRef = useRef<HTMLDivElement | null>(null)
   const onboardHomeSettingsRef = useRef<HTMLDivElement | null>(null)
@@ -1646,6 +1722,68 @@ export function FitnessApp() {
     [exercises],
   )
 
+  const createProgramDraftFromImport = useCallback(() => {
+    const cleanRows = programImportRows
+      .map((r) => {
+        const sets = Math.max(1, Math.floor(parseNumberish(r.sets) ?? 1))
+        const reps = parseNumberish(r.reps)
+        const weight = parseNumberish(r.weight)
+        return {
+          ...r,
+          exerciseName: r.exerciseName.trim(),
+          sets,
+          reps: reps != null && reps > 0 ? Math.round(reps) : null,
+          weight: weight != null && weight >= 0 ? weight : null,
+        }
+      })
+      .filter((r) => r.exerciseName)
+
+    if (!cleanRows.length) {
+      if (typeof window !== "undefined") window.alert("Paste at least one exercise row first.")
+      return
+    }
+
+    let nextCatalog = [...exercises]
+    const resolveOrCreateExerciseId = (name: string, sampleW: number | null): string => {
+      const found = nextCatalog.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase())
+      if (found) return found.id
+      const id = newExerciseId()
+      const w0 = sampleW != null && sampleW > 0 ? sampleW : 20
+      nextCatalog.push({ id, name, weights: [w0, w0, w0] as [number, number, number] })
+      return id
+    }
+
+    const now = new Date().toISOString()
+    const programExercises: ProgramExercise[] = cleanRows.map((r) => {
+      const exerciseId = resolveOrCreateExerciseId(r.exerciseName, r.weight)
+      return {
+        id: newProgramItemId(),
+        exerciseId,
+        exerciseName: r.exerciseName,
+        sets: Array.from({ length: r.sets }).map(() => ({
+          id: newProgramItemId(),
+          targetWeight: r.weight,
+          targetReps: r.reps,
+        })),
+      }
+    })
+
+    if (nextCatalog.length !== exercises.length) {
+      saveExercises(nextCatalog)
+      setExercises(nextCatalog)
+    }
+
+    setEditingProgram({
+      id: newProgramId(),
+      name: (programImportName.trim() || "Imported program").slice(0, 120),
+      createdAt: now,
+      updatedAt: now,
+      exercises: programExercises,
+    })
+    setShowProgramImport(false)
+    setScreen("programEditor")
+  }, [exercises, programImportName, programImportRows])
+
   // —— First-time setup (only when there are no saved exercises)
   if (screen === "home" && exercisesReady && exercises.length === 0) {
     return (
@@ -1822,6 +1960,20 @@ export function FitnessApp() {
             <LayoutList className="mr-2 size-5" />
             Create from Workout History
           </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-12 w-full rounded-xl text-base font-semibold"
+            onClick={() => {
+              setProgramImportText("")
+              setProgramImportRows([])
+              setProgramImportName("Imported program")
+              setShowProgramImport(true)
+            }}
+          >
+            <LayoutList className="mr-2 size-5" />
+            Import from Sheets
+          </Button>
 
           {programsList.length === 0 ? (
             <p className="mt-8 text-center text-sm text-muted-foreground">No programs yet</p>
@@ -1922,6 +2074,133 @@ export function FitnessApp() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {showProgramImport && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            aria-label="Close import"
+            onClick={() => setShowProgramImport(false)}
+          />
+          <div className="relative z-10 flex max-h-[85dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+            <div className="border-b border-border bg-card px-4 pb-3 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-foreground">Import from Sheets</h2>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => setShowProgramImport(false)}
+                >
+                  Close
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Paste Exercise, Sets, Reps, Weight columns from Sheets, Excel, or Notes.
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+              <Label htmlFor="program-import-name" className="text-xs text-muted-foreground">
+                Program name
+              </Label>
+              <Input
+                id="program-import-name"
+                value={programImportName}
+                onChange={(e) => setProgramImportName(e.target.value)}
+                className="mt-1 h-10"
+              />
+
+              <Label htmlFor="program-import-text" className="mt-4 block text-xs text-muted-foreground">
+                Paste plan
+              </Label>
+              <Textarea
+                id="program-import-text"
+                placeholder={"Exercise\tSets\tReps\tWeight\nBench Press\t3\t8\t60"}
+                value={programImportText}
+                onChange={(e) => setProgramImportText(e.target.value)}
+                rows={5}
+                className="mt-1 min-h-[8rem] resize-none text-sm"
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                className="mt-3 h-10 w-full rounded-xl"
+                onClick={() => setProgramImportRows(parseProgramImport(programImportText))}
+              >
+                Preview
+              </Button>
+
+              {programImportRows.length ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">Editable preview</p>
+                  {programImportRows.map((row) => (
+                    <div key={row.id} className="rounded-xl border border-border bg-background/60 p-3">
+                      <Input
+                        value={row.exerciseName}
+                        onChange={(e) =>
+                          setProgramImportRows((prev) =>
+                            prev.map((r) => (r.id === row.id ? { ...r, exerciseName: e.target.value } : r)),
+                          )
+                        }
+                        placeholder="Exercise"
+                        className="h-10"
+                      />
+                      <div className="mt-2 grid grid-cols-3 gap-2">
+                        <Input
+                          value={row.sets}
+                          onChange={(e) =>
+                            setProgramImportRows((prev) =>
+                              prev.map((r) => (r.id === row.id ? { ...r, sets: e.target.value } : r)),
+                            )
+                          }
+                          inputMode="numeric"
+                          placeholder="Sets"
+                          className="h-10 text-center"
+                        />
+                        <Input
+                          value={row.reps}
+                          onChange={(e) =>
+                            setProgramImportRows((prev) =>
+                              prev.map((r) => (r.id === row.id ? { ...r, reps: e.target.value } : r)),
+                            )
+                          }
+                          inputMode="numeric"
+                          placeholder="Reps"
+                          className="h-10 text-center"
+                        />
+                        <Input
+                          value={row.weight}
+                          onChange={(e) =>
+                            setProgramImportRows((prev) =>
+                              prev.map((r) => (r.id === row.id ? { ...r, weight: e.target.value } : r)),
+                            )
+                          }
+                          inputMode="decimal"
+                          placeholder="Kg"
+                          className="h-10 text-center"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="border-t border-border bg-card p-4">
+              <Button
+                type="button"
+                className="h-11 w-full rounded-xl"
+                disabled={programImportRows.length === 0}
+                onClick={createProgramDraftFromImport}
+              >
+                Create editable program
+              </Button>
             </div>
           </div>
         </div>
