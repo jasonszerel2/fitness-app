@@ -1,5 +1,7 @@
 const SAVED_KEY = "fitlog-saved-workouts-v1"
 
+export type EquipmentType = "Machine" | "Free Weight" | "Cable"
+
 export type SavedWorkoutSet = {
   id: string
   weight: number
@@ -7,6 +9,8 @@ export type SavedWorkoutSet = {
   setEndedAt: string
   setDurationSec: number
   restBeforeNextSetSec: number | null
+  /** Optional equipment style used for this set. */
+  equipmentType?: EquipmentType
   /** Optional per-set note (bodyweight context, how it felt, etc.) */
   note?: string
 }

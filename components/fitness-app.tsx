@@ -40,6 +40,7 @@ import {
   loadSavedWorkouts,
   newSavedWorkoutId,
   replaceSavedWorkout,
+  type EquipmentType,
   type SavedWorkout,
   type SavedWorkoutSet,
   updateSavedWorkoutName,
@@ -72,6 +73,7 @@ type Screen =
 
 type StarterLevel = "newbie" | "intermediate" | "charles"
 type ExerciseTab = "All" | "Push" | "Pull" | "Legs"
+type CountdownPhase = 3 | 2 | 1 | "GO"
 
 /** One row in the current session’s log (in-memory, local to this app session) */
 type SessionSetLog = {
@@ -86,6 +88,7 @@ type SessionSetLog = {
   setDurationSec: number
   /** Filled when the user presses Start for the *next* set; until then `null` */
   restBeforeNextSetSec: number | null
+  equipmentType?: EquipmentType
   /** Optional note for this set */
   note?: string
 }
@@ -293,7 +296,7 @@ function updateSavedSetFields(
   w: SavedWorkout,
   groupName: string,
   setId: string,
-  patch: Partial<Pick<SavedWorkoutSet, "weight" | "reps" | "note">>,
+  patch: Partial<Pick<SavedWorkoutSet, "weight" | "reps" | "note" | "equipmentType">>,
 ): SavedWorkout {
   return {
     ...w,
@@ -595,6 +598,35 @@ const InlineTip = memo(function InlineTip({
   )
 })
 
+const EQUIPMENT_TYPES: EquipmentType[] = ["Machine", "Free Weight", "Cable"]
+const COUNTDOWN_SETTING_KEY = "fitlog-countdown-before-set-v1"
+
+function EquipmentTypeSegment({
+  value,
+  onChange,
+}: {
+  value?: EquipmentType
+  onChange: (value: EquipmentType) => void
+}) {
+  return (
+    <div className="grid grid-cols-3 rounded-xl bg-muted p-1 text-xs">
+      {EQUIPMENT_TYPES.map((t) => (
+        <button
+          key={t}
+          type="button"
+          className={cn(
+            "h-8 rounded-lg px-2 font-medium text-muted-foreground transition-colors",
+            value === t && "bg-background text-foreground shadow-sm",
+          )}
+          onClick={() => onChange(t)}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function FitnessApp() {
   const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
@@ -639,12 +671,15 @@ export function FitnessApp() {
   const [showCustomReps, setShowCustomReps] = useState(false)
   const [showLogChangeExerciseSheet, setShowLogChangeExerciseSheet] = useState(false)
   const [logSetNote, setLogSetNote] = useState("")
+  const [logEquipmentType, setLogEquipmentType] = useState<EquipmentType | undefined>(undefined)
   const [restNoteSheet, setRestNoteSheet] = useState<{ logId: string; draft: string } | null>(null)
 
   const [sessionLogs, setSessionLogs] = useState<SessionSetLog[]>([])
 
   const [isResting, setIsResting] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
+  const [countdownBeforeSet, setCountdownBeforeSet] = useState(false)
+  const [countdownPhase, setCountdownPhase] = useState<CountdownPhase | null>(null)
   const [summaryWorkout, setSummaryWorkout] = useState<SavedWorkout | null>(null)
 
   const [draftName, setDraftName] = useState("")
@@ -721,6 +756,7 @@ export function FitnessApp() {
       }
   >(null)
   const postSaveComparisonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const repsInputRef = useRef<HTMLInputElement>(null)
   const importBackupInputRef = useRef<HTMLInputElement>(null)
 
@@ -731,6 +767,30 @@ export function FitnessApp() {
   useEffect(() => {
     restTimeRef.current = restTime
   }, [restTime])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      setCountdownBeforeSet(window.localStorage.getItem(COUNTDOWN_SETTING_KEY) === "1")
+    } catch {
+      setCountdownBeforeSet(false)
+    }
+  }, [])
+
+  const updateCountdownBeforeSet = useCallback((enabled: boolean) => {
+    setCountdownBeforeSet(enabled)
+    try {
+      window.localStorage.setItem(COUNTDOWN_SETTING_KEY, enabled ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current)
+    }
+  }, [])
 
   const computeSetElapsedSec = useCallback(() => {
     const base = setBaseSecRef.current
@@ -1092,10 +1152,16 @@ export function FitnessApp() {
     setCustomWeight("")
     setReps("")
     setLogSetNote("")
+    setLogEquipmentType(undefined)
     setRestNoteSheet(null)
     setIsSetActive(false)
     setIsResting(false)
     setIsPaused(false)
+    setCountdownPhase(null)
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
     setStartedAtMsRef.current = null
     restStartedAtMsRef.current = null
     setBaseSecRef.current = 0
@@ -1167,6 +1233,11 @@ export function FitnessApp() {
   }
 
   const openPause = () => {
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
+    setCountdownPhase(null)
     setIsPaused(true)
   }
 
@@ -1188,10 +1259,8 @@ export function FitnessApp() {
     setScreen("home")
   }
 
-  const startSet = () => {
-    if (isPaused) return
+  const prepareSetStart = useCallback(() => {
     const restToAttach = computeRestElapsedSec()
-    if (isSetActive) return
 
     setSessionLogs((prev) => {
       if (prev.length === 0) return prev
@@ -1209,8 +1278,41 @@ export function FitnessApp() {
     setRestTime(0)
     setSetTime(0)
     setBaseSecRef.current = 0
+  }, [computeRestElapsedSec])
+
+  const beginSetNow = useCallback(() => {
+    if (isPaused || isSetActive) return
+    prepareSetStart()
     setStartedAtMsRef.current = Date.now()
     setIsSetActive(true)
+    setCountdownPhase(null)
+  }, [isPaused, isSetActive, prepareSetStart])
+
+  const startSet = () => {
+    if (isPaused || isSetActive || countdownPhase != null) return
+    if (!countdownBeforeSet) {
+      beginSetNow()
+      return
+    }
+    prepareSetStart()
+    const phases: CountdownPhase[] = [3, 2, 1, "GO"]
+    let i = 0
+    setCountdownPhase(phases[i])
+    const tick = () => {
+      i += 1
+      if (i >= phases.length) {
+        countdownTimerRef.current = null
+        if (!isPaused) {
+          setStartedAtMsRef.current = Date.now()
+          setIsSetActive(true)
+        }
+        setCountdownPhase(null)
+        return
+      }
+      setCountdownPhase(phases[i])
+      countdownTimerRef.current = setTimeout(tick, phases[i] === "GO" ? 450 : 800)
+    }
+    countdownTimerRef.current = setTimeout(tick, 800)
   }
 
   const stopSet = () => {
@@ -1301,10 +1403,12 @@ export function FitnessApp() {
         setEndedAt: p.setEndedAt.toISOString(),
         setDurationSec: p.setDurationSec,
         restBeforeNextSetSec: null,
+        ...(logEquipmentType ? { equipmentType: logEquipmentType } : {}),
         ...(noteTrim ? { note: noteTrim } : {}),
       },
     ])
     setLogSetNote("")
+    setLogEquipmentType(undefined)
     setPendingAfterStop(null)
     setShowLogForm(false)
 
@@ -1409,6 +1513,7 @@ export function FitnessApp() {
       const baseReps = getSuggestedRepsForWeight(name, targetW, sessionLogs, savedWorkoutsList)
       setReps(String(baseReps))
       setLogSetNote("")
+      setLogEquipmentType(lastInSession?.equipmentType)
     },
     [savedWorkoutsList, sessionLogs],
   )
@@ -1438,6 +1543,7 @@ export function FitnessApp() {
         setEndedAt: l.setEndedAt,
         setDurationSec: l.setDurationSec,
         restBeforeNextSetSec: l.restBeforeNextSetSec,
+        ...(l.equipmentType ? { equipmentType: l.equipmentType } : {}),
         ...(l.note?.trim() ? { note: l.note.trim() } : {}),
       })),
     }))
@@ -2864,6 +2970,9 @@ export function FitnessApp() {
                       <div className="font-medium text-foreground">
                         {s.weight} kg × {s.reps}
                       </div>
+                      {s.equipmentType ? (
+                        <div className="mt-1 text-xs font-medium text-foreground/80">{s.equipmentType}</div>
+                      ) : null}
                       <div className="mt-1 text-xs text-muted-foreground">
                         Rest before next:{" "}
                         {s.restBeforeNextSetSec != null ? formatTime(s.restBeforeNextSetSec) : "—"}
@@ -2903,6 +3012,19 @@ export function FitnessApp() {
                     {historySetEditSheet.groupName} · {historySetEditSheet.set.weight} kg ×{" "}
                     {historySetEditSheet.set.reps}
                   </p>
+                  <div className="mt-4">
+                    <p className="mb-1.5 text-xs font-medium text-muted-foreground">Equipment</p>
+                    <EquipmentTypeSegment
+                      value={historySetEditSheet.set.equipmentType}
+                      onChange={(equipmentType) => {
+                        const next = updateSavedSetFields(w, historySetEditSheet.groupName, historySetEditSheet.set.id, {
+                          equipmentType,
+                        })
+                        persistHistoryWorkout(next)
+                        setHistorySetEditSheet((s) => (s ? { ...s, set: { ...s.set, equipmentType } } : s))
+                      }}
+                    />
+                  </div>
                   <div className="mt-4 grid gap-2">
                     <Button
                       type="button"
@@ -3220,6 +3342,29 @@ export function FitnessApp() {
             >
               Dark
             </Button>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">3-second countdown before set</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Shows 3, 2, 1, GO before the timer starts.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={countdownBeforeSet}
+              onClick={() => updateCountdownBeforeSet(!countdownBeforeSet)}
+              className={cn(
+                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+                countdownBeforeSet ? "bg-primary" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
+                  countdownBeforeSet ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
           </div>
         </div>
 
@@ -3783,6 +3928,14 @@ export function FitnessApp() {
           </div>
         </div>
       ) : null}
+      {countdownPhase != null ? (
+        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/75 text-white">
+          <div className="text-center">
+            <p className="text-xs font-semibold tracking-[0.35em] text-white/70">STARTING</p>
+            <p className="mt-4 text-7xl font-bold tabular-nums">{countdownPhase}</p>
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
         <div className="flex min-w-0 items-center">
           <Button
@@ -3937,6 +4090,9 @@ export function FitnessApp() {
                 <li key={s.id} className="flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <span className="text-muted-foreground">Set {i + 1}</span>
+                    {s.equipmentType ? (
+                      <span className="ml-2 text-xs font-medium text-foreground/80">{s.equipmentType}</span>
+                    ) : null}
                     {s.note?.trim() ? (
                       <span className="ml-2 inline-block max-w-[11rem] truncate align-bottom text-xs text-muted-foreground sm:max-w-[15rem]">
                         Note: {s.note.trim()}
@@ -4308,7 +4464,7 @@ export function FitnessApp() {
               onClick={startSet}
               size="lg"
               className="h-14 rounded-2xl text-base font-semibold"
-              disabled={showLogForm || isPaused}
+              disabled={showLogForm || isPaused || countdownPhase != null}
             >
               <Play className="mr-2 size-5" />
               Start set
@@ -4534,6 +4690,9 @@ export function FitnessApp() {
           />
           <h2 className="mb-1 text-center text-sm text-muted-foreground">Log set</h2>
           <p className="mb-2 text-center text-xl font-semibold">{pendingAfterStop.exerciseName}</p>
+          <div className="mx-auto mb-3 w-full max-w-xs">
+            <EquipmentTypeSegment value={logEquipmentType} onChange={setLogEquipmentType} />
+          </div>
           <div className="mb-3 flex justify-center">
             <Button
               type="button"
@@ -4896,6 +5055,21 @@ export function FitnessApp() {
                   {sessionSetEditSheet.log.exerciseName} · {sessionSetEditSheet.log.weight} kg ×{" "}
                   {sessionSetEditSheet.log.reps}
                 </p>
+                <div className="mt-4">
+                  <p className="mb-1.5 text-xs font-medium text-muted-foreground">Equipment</p>
+                  <EquipmentTypeSegment
+                    value={sessionSetEditSheet.log.equipmentType}
+                    onChange={(equipmentType) => {
+                      const id = sessionSetEditSheet.log.id
+                      setSessionLogs((prev) =>
+                        prev.map((l) => (l.id === id ? { ...l, equipmentType } : l)),
+                      )
+                      setSessionSetEditSheet((s) =>
+                        s ? { ...s, log: { ...s.log, equipmentType } } : s,
+                      )
+                    }}
+                  />
+                </div>
                 <div className="mt-4 grid gap-2">
                   <Button
                     type="button"
