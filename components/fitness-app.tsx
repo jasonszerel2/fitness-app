@@ -671,6 +671,7 @@ export function FitnessApp() {
   const [programsList, setProgramsList] = useState<Program[]>([])
   const [editingProgram, setEditingProgram] = useState<Program | null>(null)
   const [activeProgram, setActiveProgram] = useState<Program | null>(null)
+  const [showProgramHistoryPicker, setShowProgramHistoryPicker] = useState(false)
   const [lastAddedProgramExerciseId, setLastAddedProgramExerciseId] = useState<string | null>(null)
   const lastAddedProgramExerciseRef = useRef<HTMLDivElement | null>(null)
   const onboardHomeSettingsRef = useRef<HTMLDivElement | null>(null)
@@ -681,7 +682,6 @@ export function FitnessApp() {
   const onboardSaveSetRef = useRef<HTMLDivElement | null>(null)
   const onboardRestTimerRef = useRef<HTMLDivElement | null>(null)
   const onboardHistoryHeaderRef = useRef<HTMLElement | null>(null)
-  const onboardHistorySaveAsProgramRef = useRef<HTMLDivElement | null>(null)
   const onboardProgramsPrimaryRef = useRef<HTMLDivElement | null>(null)
 
   const onboardingSnap = useOnboardingProgress()
@@ -1486,7 +1486,7 @@ export function FitnessApp() {
     setHistoryDetailWorkout((prev) => (prev?.id === next.id ? next : prev))
   }, [])
 
-  const saveWorkoutAsProgram = useCallback(
+  const createProgramDraftFromWorkout = useCallback(
     (w: SavedWorkout) => {
       const performed =
         w.exercisesPerformed?.length > 0 ? w.exercisesPerformed : w.byExercise.map((g) => g.exerciseName)
@@ -1533,9 +1533,8 @@ export function FitnessApp() {
         updatedAt: now,
         exercises: programExercises,
       }
-      upsertProgram(prog)
-      setProgramsList(loadPrograms())
       setEditingProgram(prog)
+      setShowProgramHistoryPicker(false)
       setScreen("programEditor")
     },
     [exercises],
@@ -1707,6 +1706,16 @@ export function FitnessApp() {
               New program
             </Button>
           </div>
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-12 w-full rounded-xl text-base font-semibold"
+            onClick={() => setShowProgramHistoryPicker(true)}
+            disabled={sortedSavedWorkouts.length === 0}
+          >
+            <LayoutList className="mr-2 size-5" />
+            Create from Workout History
+          </Button>
 
           {programsList.length === 0 ? (
             <p className="mt-8 text-center text-sm text-muted-foreground">No programs yet</p>
@@ -1757,6 +1766,60 @@ export function FitnessApp() {
           )}
         </div>
       </div>
+      {showProgramHistoryPicker && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            aria-label="Close workout picker"
+            onClick={() => setShowProgramHistoryPicker(false)}
+          />
+          <div className="relative z-10 flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+            <div className="sticky top-0 z-10 border-b border-border bg-card px-4 pb-3 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-foreground">Choose Workout</h2>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => setShowProgramHistoryPicker(false)}
+                >
+                  Close
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Pick a saved workout to turn its sets into a planned program.
+              </p>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+              {sortedSavedWorkouts.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No saved workouts yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sortedSavedWorkouts.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      className="w-full rounded-xl border border-border bg-background/60 px-3 py-3 text-left shadow-sm transition-colors hover:bg-secondary/50"
+                      onClick={() => createProgramDraftFromWorkout(w)}
+                    >
+                      <p className="truncate text-sm font-semibold text-foreground">{savedWorkoutDisplayTitle(w)}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{formatSessionDate(w.sessionEndedAt)}</p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {w.exercisesPerformed.length ? w.exercisesPerformed.join(", ") : "No exercises"}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <OnboardingSpotlight
         show={showOnboardPrograms}
         targetRef={onboardProgramsPrimaryRef}
@@ -2581,16 +2644,6 @@ export function FitnessApp() {
                           variant="ghost"
                           size="icon"
                           className="text-muted-foreground"
-                          onClick={() => saveWorkoutAsProgram(w)}
-                          aria-label="Save as program"
-                        >
-                          <LayoutList className="size-4" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground"
                           onClick={() => {
                             if (typeof window !== "undefined" && !window.confirm("Delete this workout?")) return
                             deleteSavedWorkout(w.id)
@@ -2647,7 +2700,6 @@ export function FitnessApp() {
       )
     }
     const w = historyDetailWorkout
-    const showOnboardSaveAsProgram = !ob.done && ob.step === 8
     return (
       <div className="flex min-h-screen flex-col bg-background p-4">
         <header className="mb-4 flex items-center gap-2">
@@ -2785,17 +2837,6 @@ export function FitnessApp() {
           >
             <Play className="mr-2 size-4" />
             Continue Workout
-          </Button>
-        </div>
-        <div ref={onboardHistorySaveAsProgramRef} className="mx-auto mt-4 w-full max-w-md">
-          <Button
-            type="button"
-            variant="secondary"
-            className="w-full"
-            onClick={() => saveWorkoutAsProgram(w)}
-          >
-            <LayoutList className="mr-2 size-4" />
-            Save as Program
           </Button>
         </div>
         <div className="mx-auto mt-6 w-full max-w-md flex-1 space-y-6 overflow-y-auto pb-8">
@@ -3130,12 +3171,6 @@ export function FitnessApp() {
         >
           Back to Home
         </Button>
-        <OnboardingSpotlight
-          show={showOnboardSaveAsProgram}
-          targetRef={onboardHistorySaveAsProgramRef}
-          message="Turn workouts into reusable programs."
-          stepKey={ob.step}
-        />
       </div>
     )
   }
