@@ -3874,57 +3874,60 @@ export function FitnessApp() {
       </div>
 
       {showSwitchSheet && (
-        <div className="absolute inset-0 z-30 flex flex-col justify-end bg-black/30 p-0">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]">
           <button
             type="button"
             className="absolute inset-0 cursor-default"
             aria-label="Close exercise switcher"
             onClick={() => setShowSwitchSheet(false)}
           />
-          <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-base font-semibold text-foreground">Add / Switch exercise</h2>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-9"
-                  onClick={() => setShowQuickAddExercise(true)}
-                  disabled={showLogForm || isPaused}
-                >
-                  New
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground"
-                  onClick={() => setShowSwitchSheet(false)}
-                >
-                  Close
-                </Button>
+          <div className="relative z-10 flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+            <div className="sticky top-0 z-10 border-b border-border bg-card px-4 pb-3 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-foreground">Choose Exercise</h2>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9"
+                    onClick={() => setShowQuickAddExercise(true)}
+                    disabled={showLogForm || isPaused}
+                  >
+                    New
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => setShowSwitchSheet(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+
+              <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
+                {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+                  <Button
+                    key={t}
+                    type="button"
+                    variant={workoutTab === t ? "default" : "secondary"}
+                    size="sm"
+                    className={cn("h-8 rounded-full px-3 text-xs", workoutTab === t && "bg-primary text-primary-foreground")}
+                    onClick={() => setWorkoutTab(t)}
+                    disabled={showLogForm || isPaused || showQuickAddExercise}
+                  >
+                    {t}
+                  </Button>
+                ))}
               </div>
             </div>
 
-            <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
-              {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
-                <Button
-                  key={t}
-                  type="button"
-                  variant={workoutTab === t ? "default" : "secondary"}
-                  size="sm"
-                  className={cn("h-8 rounded-full px-3 text-xs", workoutTab === t && "bg-primary text-primary-foreground")}
-                  onClick={() => setWorkoutTab(t)}
-                  disabled={showLogForm || isPaused || showQuickAddExercise}
-                >
-                  {t}
-                </Button>
-              ))}
-            </div>
-
-            {sessionExerciseIds.length ? (
-              <div className="mt-3">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+              {sessionExerciseIds.length ? (
+              <div>
                 <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                   Recent
                 </p>
@@ -3954,7 +3957,7 @@ export function FitnessApp() {
               </div>
             ) : null}
 
-            <div className="mt-3 max-h-[55vh] overflow-y-auto pr-1">
+            <div className="mt-3 pr-1">
               {groupExercisesForUI(exercises)
                 .filter((g) => {
                   if (workoutTab === "All") return true
@@ -3990,12 +3993,13 @@ export function FitnessApp() {
                   </div>
                 ))}
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {showQuickAddExercise && (
-        <div className="absolute inset-0 z-30 flex flex-col bg-background/98 p-4 pt-6">
+        <div className="fixed inset-0 z-[80] flex flex-col bg-background/98 p-4 pt-6">
           <div className="mx-auto w-full max-w-md rounded-2xl border border-border bg-card p-4 shadow-sm">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-base font-semibold text-foreground">Add exercise</h2>
@@ -4339,46 +4343,48 @@ export function FitnessApp() {
           style={{ pointerEvents: "auto" }}
         >
           {showLogChangeExerciseSheet && (
-            <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/30 p-0">
+            <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]">
               <button
                 type="button"
                 className="absolute inset-0 cursor-default"
                 aria-label="Close exercise picker"
                 onClick={() => setShowLogChangeExerciseSheet(false)}
               />
-              <div className="relative w-full rounded-t-3xl border border-border bg-card p-4 shadow-xl">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-base font-semibold text-foreground">Pick exercise</h3>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground"
-                    onClick={() => setShowLogChangeExerciseSheet(false)}
-                  >
-                    Close
-                  </Button>
-                </div>
-
-                <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
-                  {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+              <div className="relative z-10 flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+                <div className="sticky top-0 z-10 border-b border-border bg-card px-4 pb-3 pt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-base font-semibold text-foreground">Choose Exercise</h3>
                     <Button
-                      key={t}
                       type="button"
-                      variant={workoutTab === t ? "default" : "secondary"}
+                      variant="ghost"
                       size="sm"
-                      className={cn(
-                        "h-8 rounded-full px-3 text-xs",
-                        workoutTab === t && "bg-primary text-primary-foreground",
-                      )}
-                      onClick={() => setWorkoutTab(t)}
+                      className="text-muted-foreground"
+                      onClick={() => setShowLogChangeExerciseSheet(false)}
                     >
-                      {t}
+                      Close
                     </Button>
-                  ))}
+                  </div>
+
+                  <div className="no-scrollbar mt-3 flex gap-1 overflow-x-auto">
+                    {(["All", "Push", "Pull", "Legs"] as const).map((t) => (
+                      <Button
+                        key={t}
+                        type="button"
+                        variant={workoutTab === t ? "default" : "secondary"}
+                        size="sm"
+                        className={cn(
+                          "h-8 rounded-full px-3 text-xs",
+                          workoutTab === t && "bg-primary text-primary-foreground",
+                        )}
+                        onClick={() => setWorkoutTab(t)}
+                      >
+                        {t}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="mt-3 max-h-[55vh] overflow-y-auto pr-1">
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
                   {groupExercisesForUI(exercises)
                     .filter((g) => (workoutTab === "All" ? true : g.label === workoutTab))
                     .map((group) => (
@@ -4799,7 +4805,10 @@ export function FitnessApp() {
             aria-label="Close"
             onClick={() => setSessionSetEditSheet(null)}
           />
-          <div className="relative z-10 mx-auto max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl border border-border bg-card p-4 shadow-xl sm:max-h-[90vh] sm:rounded-2xl">
+          <div
+            key={sessionSetEditSheet.phase}
+            className="relative z-10 mx-auto max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl border border-border bg-card p-4 shadow-xl sm:max-h-[90vh] sm:rounded-2xl"
+          >
             {sessionSetEditSheet.phase === "actions" && (
               <>
                 <p className="text-sm font-semibold text-foreground">Set options</p>
