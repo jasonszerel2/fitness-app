@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react"
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Play,
   Square,
@@ -505,85 +505,92 @@ function WorkoutPauseOverlay({
   )
 }
 
-export function FitnessApp() {
-  const { theme, setTheme } = useTheme()
+// Mobile-safe onboarding tips (v1): simple inline cards, isolated from workout timers.
+const TIPS_SKIP_KEY = "fitlog-tips-v1-skip"
+const tipKey = (k: string) => `fitlog-tips-v1:${k}`
 
-  // ---- Mobile-safe onboarding tips (v1): simple inline cards, no overlays.
-  const TIPS_SKIP_KEY = "fitlog-tips-v1-skip"
-  const tipKey = (k: string) => `fitlog-tips-v1:${k}`
-  const isTipsSkipped = () => {
-    if (typeof window === "undefined") return true
+function isTipsSkipped() {
+  if (typeof window === "undefined") return true
+  try {
+    return window.localStorage.getItem(TIPS_SKIP_KEY) === "1"
+  } catch {
+    return true
+  }
+}
+
+function markTipDone(k: string) {
+  try {
+    window.localStorage.setItem(tipKey(k), "1")
+  } catch {
+    // ignore private-mode storage failures
+  }
+}
+
+function skipAllTips() {
+  try {
+    window.localStorage.setItem(TIPS_SKIP_KEY, "1")
+  } catch {
+    // ignore private-mode storage failures
+  }
+}
+
+const InlineTip = memo(function InlineTip({
+  id,
+  text,
+  className,
+}: {
+  id: string
+  text: string
+  className?: string
+}) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isTipsSkipped()) return
     try {
-      return window.localStorage.getItem(TIPS_SKIP_KEY) === "1"
+      const done = window.localStorage.getItem(tipKey(id)) === "1"
+      setVisible(!done)
     } catch {
-      return true
+      setVisible(false)
     }
-  }
-  const markTipDone = (k: string) => {
-    try {
-      window.localStorage.setItem(tipKey(k), "1")
-    } catch {}
-  }
-  const skipAllTips = () => {
-    try {
-      window.localStorage.setItem(TIPS_SKIP_KEY, "1")
-    } catch {}
-  }
+  }, [id])
 
-  function InlineTip({
-    id,
-    text,
-    className,
-  }: {
-    id: string
-    text: string
-    className?: string
-  }) {
-    const [visible, setVisible] = useState(false)
-    useEffect(() => {
-      if (typeof window === "undefined") return
-      if (isTipsSkipped()) return
-      try {
-        const done = window.localStorage.getItem(tipKey(id)) === "1"
-        setVisible(!done)
-      } catch {
-        setVisible(false)
-      }
-    }, [id])
-    if (!visible) return null
-    return (
-      <div className={cn("mx-auto w-full max-w-md", className)}>
-        <div className="rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm shadow-sm">
-          <p className="text-foreground/90">{text}</p>
-          <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-8 px-2 text-xs text-muted-foreground"
-              onClick={() => {
-                skipAllTips()
-                setVisible(false)
-              }}
-            >
-              Skip tips
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 px-3 text-xs"
-              onClick={() => {
-                markTipDone(id)
-                setVisible(false)
-              }}
-            >
-              Got it
-            </Button>
-          </div>
+  const onSkip = useCallback(() => {
+    skipAllTips()
+    setVisible(false)
+  }, [])
+
+  const onDismiss = useCallback(() => {
+    markTipDone(id)
+    setVisible(false)
+  }, [id])
+
+  if (!visible) return null
+  return (
+    <div className={cn("mx-auto w-full max-w-md shrink-0", className)}>
+      <div className="rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm shadow-sm">
+        <p className="text-foreground/90">{text}</p>
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 px-2 text-xs text-muted-foreground"
+            onClick={onSkip}
+          >
+            Skip tips
+          </Button>
+          <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={onDismiss}>
+            Got it
+          </Button>
         </div>
       </div>
-    )
-  }
+    </div>
+  )
+})
+
+export function FitnessApp() {
+  const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
   const [exercises, setExercises] = useState<StoredExercise[]>([])
   const [workoutTab, setWorkoutTab] = useState<ExerciseTab>("All")
@@ -4146,7 +4153,7 @@ export function FitnessApp() {
         className={cn("flex min-h-0 flex-1 flex-col px-4 pt-4", showLogForm && "pointer-events-none select-none opacity-0")}
         aria-hidden={showLogForm}
       >
-        {!showLogForm && !isSetActive && !isPaused ? (
+        {!showLogForm && !isSetActive && !isResting && !isPaused ? (
           <InlineTip id="workout" text="Pick an exercise, then log sets with weight and reps." className="mb-3" />
         ) : null}
         <div ref={onboardRestTimerRef}>
