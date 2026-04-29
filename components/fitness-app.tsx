@@ -488,16 +488,22 @@ function WorkoutPauseOverlay({
 }) {
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/90 p-4">
-      <div className="w-full max-w-sm space-y-3 rounded-2xl border border-border bg-card p-5 shadow-lg">
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 shadow-lg">
         <h2 className="text-center text-lg font-semibold">Paused</h2>
-        <p className="text-center text-sm text-muted-foreground">All timers are stopped</p>
-        <Button type="button" className="w-full" size="lg" onClick={onResume}>
+        <p className="mt-1 text-center text-sm text-muted-foreground">All timers are stopped</p>
+        <Button type="button" className="mt-5 h-12 w-full rounded-xl" size="lg" onClick={onResume}>
           Resume Workout
         </Button>
-        <Button type="button" className="w-full" size="lg" onClick={onFinish}>
+        <Button type="button" className="mt-3 h-14 w-full rounded-xl text-base font-semibold" size="lg" onClick={onFinish}>
           Finish &amp; Save Workout
         </Button>
-        <Button type="button" className="w-full" size="lg" variant="outline" onClick={onCancel}>
+        <Button
+          type="button"
+          className="mt-6 h-10 w-full rounded-xl text-sm text-muted-foreground"
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+        >
           Cancel Workout
         </Button>
       </div>
@@ -1116,6 +1122,28 @@ export function FitnessApp() {
       setShowSwitchSheet(false)
     },
     [setPostSaveComparison],
+  )
+
+  const continueWorkoutFromHistory = useCallback(
+    (workout: SavedWorkout) => {
+      const savedNames = workout.byExercise.map((g) => g.exerciseName.trim().toLowerCase())
+      const ids = savedNames
+        .map((name) => exercises.find((e) => e.name.trim().toLowerCase() === name)?.id ?? null)
+        .filter((id): id is string => id != null)
+
+      resetWorkoutSession()
+      const start = new Date()
+      setSessionId(`sess-${start.getTime()}-${Math.random().toString(36).slice(2, 7)}`)
+      setSessionStartedAt(start.toISOString())
+      setSessionExerciseIds(ids)
+      setCurrentExerciseId(ids[0] ?? exercises[0]?.id ?? null)
+      setHistorySetEditSheet(null)
+      setHistoryDetailWorkout(null)
+      setHistoryEditingId(null)
+      setActiveProgram(null)
+      setScreen("workout")
+    },
+    [exercises, resetWorkoutSession],
   )
 
   const startWorkout = () => {
@@ -2749,6 +2777,16 @@ export function FitnessApp() {
             {formatWorkoutDurationMinutes(Number.isFinite(w.totalDurationSec) ? w.totalDurationSec : 0)}
           </p>
         </div>
+        <div className="mx-auto mt-4 w-full max-w-md">
+          <Button
+            type="button"
+            className="h-12 w-full rounded-xl text-base font-semibold"
+            onClick={() => continueWorkoutFromHistory(w)}
+          >
+            <Play className="mr-2 size-4" />
+            Continue Workout
+          </Button>
+        </div>
         <div ref={onboardHistorySaveAsProgramRef} className="mx-auto mt-4 w-full max-w-md">
           <Button
             type="button"
@@ -3861,9 +3899,16 @@ export function FitnessApp() {
           {currentExerciseSessionSets.length ? (
             <ul className="mt-3 space-y-1.5 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
               {currentExerciseSessionSets.map((s, i) => (
-                <li key={s.id} className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Set {i + 1}</span>
-                  <span className="font-medium text-foreground">
+                <li key={s.id} className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-muted-foreground">Set {i + 1}</span>
+                    {s.note?.trim() ? (
+                      <span className="ml-2 inline-block max-w-[11rem] truncate align-bottom text-xs text-muted-foreground sm:max-w-[15rem]">
+                        Note: {s.note.trim()}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="shrink-0 font-medium text-foreground">
                     {s.weight} kg × {s.reps}
                   </span>
                 </li>
