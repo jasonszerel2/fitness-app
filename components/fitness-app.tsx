@@ -701,6 +701,37 @@ function EquipmentTypeSegment({
   )
 }
 
+function SettingsSwitch({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full p-1 transition-colors",
+        checked ? "bg-primary" : "bg-muted",
+      )}
+    >
+      <span
+        className={cn(
+          "block size-5 rounded-full bg-background shadow-sm transition-transform",
+          checked ? "translate-x-5" : "translate-x-0",
+        )}
+      />
+    </button>
+  )
+}
+
 export function FitnessApp() {
   const { theme, setTheme } = useTheme()
   const [screen, setScreen] = useState<Screen>("home")
@@ -751,6 +782,7 @@ export function FitnessApp() {
   const [restNoteSheet, setRestNoteSheet] = useState<{ logId: string; draft: string } | null>(null)
 
   const [sessionLogs, setSessionLogs] = useState<SessionSetLog[]>([])
+  const [showSessionHistory, setShowSessionHistory] = useState(false)
 
   const [isResting, setIsResting] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
@@ -1091,6 +1123,11 @@ export function FitnessApp() {
     return currentExerciseSessionSets[currentExerciseSessionSets.length - 1]
   }, [currentExerciseSessionSets])
 
+  const currentExerciseVisibleSets = useMemo(
+    () => currentExerciseSessionSets.slice(-3),
+    [currentExerciseSessionSets],
+  )
+
   const programProgress = useMemo(() => {
     if (!activeProgram) return null
     const setsByExerciseId = new Map<string, number>()
@@ -1314,6 +1351,7 @@ export function FitnessApp() {
     setShowSwitchSheet(false)
     setActiveProgram(null)
     setSessionLogs([])
+    setShowSessionHistory(false)
     setPendingAfterStop(null)
     setShowLogForm(false)
     setSelectedWeight(null)
@@ -3735,92 +3773,49 @@ export function FitnessApp() {
         <div className="mx-auto mb-6 w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-sm">
           <h2 className="text-sm font-semibold text-foreground">Theme</h2>
           <p className="mt-1 text-xs text-muted-foreground">Light is the default. Dark is available for low light.</p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button
-              type="button"
-              variant={theme === "light" ? "default" : "secondary"}
-              className={cn(theme === "light" && "bg-primary text-primary-foreground")}
-              onClick={() => setTheme("light")}
-            >
-              Light
-            </Button>
-            <Button
-              type="button"
-              variant={theme === "dark" ? "default" : "secondary"}
-              className={cn(theme === "dark" && "bg-primary text-primary-foreground")}
-              onClick={() => setTheme("dark")}
-            >
-              Dark
-            </Button>
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Dark mode</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Switch between light and dark theme.</p>
+            </div>
+            <SettingsSwitch
+              checked={theme === "dark"}
+              onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
+              label="Toggle dark mode"
+            />
           </div>
           <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
             <div>
               <p className="text-sm font-medium text-foreground">3-second countdown before set</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Shows 3, 2, 1, GO before the timer starts.</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={countdownBeforeSet}
-              onClick={() => updateCountdownBeforeSet(!countdownBeforeSet)}
-              className={cn(
-                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
-                countdownBeforeSet ? "bg-primary" : "bg-muted",
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
-                  countdownBeforeSet ? "translate-x-6" : "translate-x-1",
-                )}
-              />
-            </button>
+            <SettingsSwitch
+              checked={countdownBeforeSet}
+              onCheckedChange={updateCountdownBeforeSet}
+              label="Toggle countdown before set"
+            />
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
             <div>
               <p className="text-sm font-medium text-foreground">Vibration feedback</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Small vibration on start, stop, and save.</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={vibrationFeedback}
-              onClick={() => updateVibrationFeedback(!vibrationFeedback)}
-              className={cn(
-                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
-                vibrationFeedback ? "bg-primary" : "bg-muted",
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
-                  vibrationFeedback ? "translate-x-6" : "translate-x-1",
-                )}
-              />
-            </button>
+            <SettingsSwitch
+              checked={vibrationFeedback}
+              onCheckedChange={updateVibrationFeedback}
+              label="Toggle vibration feedback"
+            />
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
             <div>
               <p className="text-sm font-medium text-foreground">Sound feedback</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Subtle click on start, stop, and save.</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={soundFeedback}
-              onClick={() => updateSoundFeedback(!soundFeedback)}
-              className={cn(
-                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
-                soundFeedback ? "bg-primary" : "bg-muted",
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
-                  soundFeedback ? "translate-x-6" : "translate-x-1",
-                )}
-              />
-            </button>
+            <SettingsSwitch
+              checked={soundFeedback}
+              onCheckedChange={updateSoundFeedback}
+              label="Toggle sound feedback"
+            />
           </div>
         </div>
 
@@ -4556,26 +4551,39 @@ export function FitnessApp() {
           </p>
 
           {currentExerciseSessionSets.length ? (
-            <ul className="mt-3 space-y-1.5 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
-              {currentExerciseSessionSets.map((s, i) => (
-                <li key={s.id} className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <span className="text-muted-foreground">Set {i + 1}</span>
-                    {s.equipmentType ? (
-                      <span className="ml-2 text-xs font-medium text-foreground/80">{s.equipmentType}</span>
-                    ) : null}
-                    {s.note?.trim() ? (
-                      <span className="ml-2 inline-block max-w-[11rem] truncate align-bottom text-xs text-muted-foreground sm:max-w-[15rem]">
-                        Note: {s.note.trim()}
+            <div className="mt-3 rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-sm">
+              <div className="mb-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>
+                  {currentExerciseSessionSets.length} set{currentExerciseSessionSets.length === 1 ? "" : "s"} this session
+                </span>
+                {currentExerciseSessionSets.length > currentExerciseVisibleSets.length ? (
+                  <span>Latest {currentExerciseVisibleSets.length}</span>
+                ) : null}
+              </div>
+              <ul className="space-y-1.5">
+                {currentExerciseVisibleSets.map((s) => {
+                  const setNumber = currentExerciseSessionSets.findIndex((x) => x.id === s.id) + 1
+                  return (
+                    <li key={s.id} className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <span className="text-muted-foreground">Set {setNumber}</span>
+                        {s.equipmentType ? (
+                          <span className="ml-2 text-xs font-medium text-foreground/80">{s.equipmentType}</span>
+                        ) : null}
+                        {s.note?.trim() ? (
+                          <span className="ml-2 inline-block max-w-[11rem] truncate align-bottom text-xs text-muted-foreground sm:max-w-[15rem]">
+                            Note: {s.note.trim()}
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 font-medium text-foreground">
+                        {s.weight} kg × {s.reps}
                       </span>
-                    ) : null}
-                  </div>
-                  <span className="shrink-0 font-medium text-foreground">
-                    {s.weight} kg × {s.reps}
-                  </span>
-                </li>
-              ))}
-            </ul>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
           ) : null}
         </div>
       </div>
@@ -4972,76 +4980,124 @@ export function FitnessApp() {
         </div>
 
         {sessionLogs.length > 0 && (
-          <div className="mt-6 w-full max-w-md flex-1 self-center overflow-y-auto pb-6">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-medium text-foreground">Session log</h3>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 shrink-0 gap-1"
-                disabled={showLogForm || sessionLogs.length === 0}
-                onClick={() => {
-                  if (typeof window === "undefined") return
-                  if (!window.confirm("Are you sure you want to undo the last set?")) return
-                  setSessionLogs((prev) => (prev.length ? prev.slice(0, -1) : prev))
-                }}
-              >
-                <Undo2 className="size-3.5" />
-                Undo last set
-              </Button>
-            </div>
-            {sessionStartedAt && (
-              <p className="mb-3 text-xs text-muted-foreground">Started {formatSessionDate(sessionStartedAt)}</p>
-            )}
-            <div className="space-y-4">
-              {exerciseOrder.map((name) => {
-                const list = logsByExercise.get(name) ?? []
-                return (
-                  <div key={name}>
-                    <h4 className="mb-1.5 text-sm font-semibold text-foreground">{name}</h4>
-                    <ul className="space-y-2 text-sm">
-                      {list.map((log) => (
-                        <li key={log.id}>
-                          <button
-                            type="button"
-                            className="w-full rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left leading-snug transition-colors hover:bg-secondary/50"
-                            onClick={() => {
-                              setSetEditPickerTab("All")
-                              setSessionSetEditSheet({
-                                log,
-                                phase: "actions",
-                                draftW: String(log.weight),
-                                draftR: String(log.reps),
-                                draftNote: log.note ?? "",
-                              })
-                            }}
-                          >
-                            <div>
-                              {log.reps} reps @ {log.weight} kg
-                            </div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">
-                              Set ended {formatClock(log.setEndedAt)} · work {formatTime(log.setDurationSec)}
-                              {log.restBeforeNextSetSec != null
-                                ? ` · rest before next ${formatTime(log.restBeforeNextSetSec)}`
-                                : " · rest before next — (until you start the next set)"}
-                            </div>
-                            {log.note?.trim() ? (
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                <span className="font-medium text-foreground">Note:</span> {log.note.trim()}
-                              </p>
-                            ) : null}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )
-              })}
-            </div>
+          <div className="mt-5 grid w-full max-w-xs gap-2 self-center pb-6">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 rounded-xl"
+              onClick={() => setShowSessionHistory(true)}
+              disabled={showLogForm}
+            >
+              Show Session History
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9 gap-1 text-muted-foreground"
+              disabled={showLogForm || sessionLogs.length === 0}
+              onClick={() => {
+                if (typeof window === "undefined") return
+                if (!window.confirm("Are you sure you want to undo the last set?")) return
+                setSessionLogs((prev) => (prev.length ? prev.slice(0, -1) : prev))
+              }}
+            >
+              <Undo2 className="size-3.5" />
+              Undo last set
+            </Button>
           </div>
         )}
       </div>
+
+      {showSessionHistory && (
+        <div
+          className="fixed inset-0 z-[65] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]"
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default"
+            aria-label="Close session history"
+            onClick={() => setShowSessionHistory(false)}
+          />
+          <div className="relative z-10 flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+            <div className="shrink-0 border-b border-border bg-card px-4 pb-3 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-semibold text-foreground">Current Session History</h3>
+                  {sessionStartedAt ? (
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Started {formatSessionDate(sessionStartedAt)}
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => setShowSessionHistory(false)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+              {sessionLogs.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No sets logged yet.</p>
+              ) : (
+                <div className="space-y-4">
+                  {exerciseOrder.map((name) => {
+                    const list = logsByExercise.get(name) ?? []
+                    return (
+                      <div key={name}>
+                        <h4 className="mb-1.5 text-sm font-semibold text-foreground">{name}</h4>
+                        <ul className="space-y-2 text-sm">
+                          {list.map((log) => (
+                            <li key={log.id}>
+                              <button
+                                type="button"
+                                className="w-full rounded-lg border border-border/80 bg-secondary/30 px-3 py-2 text-left leading-snug transition-colors hover:bg-secondary/50"
+                                onClick={() => {
+                                  setSetEditPickerTab("All")
+                                  setSessionSetEditSheet({
+                                    log,
+                                    phase: "actions",
+                                    draftW: String(log.weight),
+                                    draftR: String(log.reps),
+                                    draftNote: log.note ?? "",
+                                  })
+                                  setShowSessionHistory(false)
+                                }}
+                              >
+                                <div className="font-medium text-foreground">
+                                  {log.weight} kg × {log.reps}
+                                </div>
+                                <div className="mt-0.5 text-xs text-muted-foreground">
+                                  Work {formatTime(log.setDurationSec)}
+                                  {log.restBeforeNextSetSec != null
+                                    ? ` · rest ${formatTime(log.restBeforeNextSetSec)}`
+                                    : " · rest —"}
+                                </div>
+                                {log.note?.trim() ? (
+                                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground">Note:</span> {log.note.trim()}
+                                  </p>
+                                ) : null}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Logging overlay: rest already running; form does not block the rest timer (Issue 2) */}
       {showLogForm && logExercise && pendingAfterStop && (
