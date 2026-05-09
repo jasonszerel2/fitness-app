@@ -672,6 +672,8 @@ const InlineTip = memo(function InlineTip({
 
 const EQUIPMENT_TYPES: EquipmentType[] = ["Machine", "Free Weight", "Cable"]
 const COUNTDOWN_SETTING_KEY = "fitlog-countdown-before-set-v1"
+const VIBRATION_FEEDBACK_SETTING_KEY = "fitlog-vibration-feedback-v1"
+const SOUND_FEEDBACK_SETTING_KEY = "fitlog-sound-feedback-v1"
 
 function EquipmentTypeSegment({
   value,
@@ -738,6 +740,8 @@ export function FitnessApp() {
   const [selectedWeight, setSelectedWeight] = useState<number | null>(null)
   const [customWeight, setCustomWeight] = useState("")
   const [showCustomWeight, setShowCustomWeight] = useState(false)
+  const selectedWeightRef = useRef<number | null>(null)
+  const customWeightRef = useRef("")
   const customWeightInputRef = useRef<HTMLInputElement>(null)
   const [reps, setReps] = useState("")
   const [showCustomReps, setShowCustomReps] = useState(false)
@@ -751,6 +755,8 @@ export function FitnessApp() {
   const [isResting, setIsResting] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [countdownBeforeSet, setCountdownBeforeSet] = useState(false)
+  const [vibrationFeedback, setVibrationFeedback] = useState(false)
+  const [soundFeedback, setSoundFeedback] = useState(false)
   const [countdownPhase, setCountdownPhase] = useState<CountdownPhase | null>(null)
   const [summaryWorkout, setSummaryWorkout] = useState<SavedWorkout | null>(null)
 
@@ -833,6 +839,8 @@ export function FitnessApp() {
   >(null)
   const postSaveComparisonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const repeatDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const repeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const repsInputRef = useRef<HTMLInputElement>(null)
   const importBackupInputRef = useRef<HTMLInputElement>(null)
 
@@ -848,8 +856,12 @@ export function FitnessApp() {
     if (typeof window === "undefined") return
     try {
       setCountdownBeforeSet(window.localStorage.getItem(COUNTDOWN_SETTING_KEY) === "1")
+      setVibrationFeedback(window.localStorage.getItem(VIBRATION_FEEDBACK_SETTING_KEY) === "1")
+      setSoundFeedback(window.localStorage.getItem(SOUND_FEEDBACK_SETTING_KEY) === "1")
     } catch {
       setCountdownBeforeSet(false)
+      setVibrationFeedback(false)
+      setSoundFeedback(false)
     }
   }, [])
 
@@ -862,11 +874,91 @@ export function FitnessApp() {
     }
   }, [])
 
+  const updateVibrationFeedback = useCallback((enabled: boolean) => {
+    setVibrationFeedback(enabled)
+    try {
+      window.localStorage.setItem(VIBRATION_FEEDBACK_SETTING_KEY, enabled ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const updateSoundFeedback = useCallback((enabled: boolean) => {
+    setSoundFeedback(enabled)
+    try {
+      window.localStorage.setItem(SOUND_FEEDBACK_SETTING_KEY, enabled ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [])
+
   useEffect(() => {
     return () => {
       if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current)
+      if (repeatDelayRef.current) clearTimeout(repeatDelayRef.current)
+      if (repeatIntervalRef.current) clearInterval(repeatIntervalRef.current)
     }
   }, [])
+
+  const playActionFeedback = useCallback(() => {
+    if (typeof window === "undefined") return
+
+    if (vibrationFeedback) {
+      try {
+        navigator.vibrate?.(25)
+      } catch {
+        // Unsupported devices can safely ignore vibration.
+      }
+    }
+
+    if (soundFeedback) {
+      try {
+        const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext
+        if (!AudioContextCtor) return
+        const ctx = new AudioContextCtor()
+        const oscillator = ctx.createOscillator()
+        const gain = ctx.createGain()
+        oscillator.type = "sine"
+        oscillator.frequency.value = 660
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.04, ctx.currentTime + 0.01)
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08)
+        oscillator.connect(gain)
+        gain.connect(ctx.destination)
+        oscillator.start()
+        oscillator.stop(ctx.currentTime + 0.09)
+        setTimeout(() => {
+          ctx.close().catch(() => {
+            // ignore
+          })
+        }, 140)
+      } catch {
+        // Audio feedback is best-effort only.
+      }
+    }
+  }, [soundFeedback, vibrationFeedback])
+
+  const stopHoldRepeat = useCallback(() => {
+    if (repeatDelayRef.current) {
+      clearTimeout(repeatDelayRef.current)
+      repeatDelayRef.current = null
+    }
+    if (repeatIntervalRef.current) {
+      clearInterval(repeatIntervalRef.current)
+      repeatIntervalRef.current = null
+    }
+  }, [])
+
+  const startHoldRepeat = useCallback(
+    (step: () => void) => {
+      stopHoldRepeat()
+      step()
+      repeatDelayRef.current = setTimeout(() => {
+        repeatIntervalRef.current = setInterval(step, 85)
+      }, 350)
+    },
+    [stopHoldRepeat],
+  )
 
   const computeSetElapsedSec = useCallback(() => {
     const base = setBaseSecRef.current
@@ -1362,7 +1454,8 @@ export function FitnessApp() {
     setStartedAtMsRef.current = Date.now()
     setIsSetActive(true)
     setCountdownPhase(null)
-  }, [isPaused, isSetActive, prepareSetStart])
+    playActionFeedback()
+  }, [isPaused, isSetActive, playActionFeedback, prepareSetStart])
 
   const startSet = () => {
     if (isPaused || isSetActive || countdownPhase != null) return
@@ -1381,6 +1474,7 @@ export function FitnessApp() {
         if (!isPaused) {
           setStartedAtMsRef.current = Date.now()
           setIsSetActive(true)
+          playActionFeedback()
         }
         setCountdownPhase(null)
         return
@@ -1391,9 +1485,22 @@ export function FitnessApp() {
     countdownTimerRef.current = setTimeout(tick, 800)
   }
 
+  const skipCountdown = () => {
+    if (countdownPhase == null || isPaused || isSetActive) return
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current)
+      countdownTimerRef.current = null
+    }
+    setStartedAtMsRef.current = Date.now()
+    setIsSetActive(true)
+    setCountdownPhase(null)
+    playActionFeedback()
+  }
+
   const stopSet = () => {
     if (isPaused) return
     if (!currentExercise) return
+    playActionFeedback()
     const ended = new Date()
     const duration = computeSetElapsedSec()
     setBaseSecRef.current = duration
@@ -1427,6 +1534,7 @@ export function FitnessApp() {
     const repCount = parseInt(reps, 10)
     if (!Number.isFinite(weight) || weight < 0) return
     if (!Number.isFinite(repCount) || repCount <= 0) return
+    playActionFeedback()
 
     const p = pendingAfterStop
     const plannedForThisSet = (() => {
@@ -1505,6 +1613,8 @@ export function FitnessApp() {
   }
 
   const selectWeight = (weight: number) => {
+    selectedWeightRef.current = weight
+    customWeightRef.current = ""
     setSelectedWeight(weight)
     setCustomWeight("")
     setShowCustomWeight(false)
@@ -1520,6 +1630,8 @@ export function FitnessApp() {
   }
 
   const handleCustomWeight = (value: string) => {
+    selectedWeightRef.current = null
+    customWeightRef.current = value
     setCustomWeight(value)
     setSelectedWeight(null)
     setShowCustomWeight(true)
@@ -1536,6 +1648,23 @@ export function FitnessApp() {
       }
     }
   }
+
+  const adjustWeight = useCallback(
+    (delta: number) => {
+      const parsedCustom = parseFloat(customWeightRef.current)
+      const base = selectedWeightRef.current ?? (Number.isFinite(parsedCustom) ? parsedCustom : 0)
+      selectWeight(Math.max(0, Math.round(base + delta)))
+    },
+    [selectWeight],
+  )
+
+  const adjustReps = useCallback((delta: number) => {
+    setReps((prev) => {
+      const n = parseInt(prev, 10)
+      const cur = Number.isFinite(n) ? n : 8
+      return String(Math.max(1, cur + delta))
+    })
+  }, [])
 
   const exerciseOrder = useMemo(() => {
     const order: string[] = []
@@ -1582,6 +1711,8 @@ export function FitnessApp() {
       else if (near(targetW, w3)) preset = w3
       else customW = String(Math.round(targetW * 10) / 10)
 
+      selectedWeightRef.current = preset
+      customWeightRef.current = customW
       setSelectedWeight(preset)
       setCustomWeight(customW)
       setShowCustomWeight(false)
@@ -3645,6 +3776,52 @@ export function FitnessApp() {
               />
             </button>
           </div>
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Vibration feedback</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Small vibration on start, stop, and save.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={vibrationFeedback}
+              onClick={() => updateVibrationFeedback(!vibrationFeedback)}
+              className={cn(
+                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+                vibrationFeedback ? "bg-primary" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
+                  vibrationFeedback ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Sound feedback</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Subtle click on start, stop, and save.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={soundFeedback}
+              onClick={() => updateSoundFeedback(!soundFeedback)}
+              className={cn(
+                "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+                soundFeedback ? "bg-primary" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-1 size-5 rounded-full bg-background shadow-sm transition-transform",
+                  soundFeedback ? "translate-x-6" : "translate-x-1",
+                )}
+              />
+            </button>
+          </div>
         </div>
 
         <div className="mx-auto mb-6 w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -4208,10 +4385,25 @@ export function FitnessApp() {
         </div>
       ) : null}
       {countdownPhase != null ? (
-        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/75 text-white">
+        <div
+          className="fixed inset-0 z-[55] flex cursor-pointer items-center justify-center bg-black/75 text-white"
+          onClick={skipCountdown}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return
+            e.preventDefault()
+            skipCountdown()
+          }}
+          role="button"
+          tabIndex={0}
+          aria-label="Skip countdown"
+        >
           <div className="text-center">
             <p className="text-xs font-semibold tracking-[0.35em] text-white/70">STARTING</p>
             <p className="mt-4 text-7xl font-bold tabular-nums">{countdownPhase}</p>
+            <span className="mt-8 inline-flex h-11 items-center rounded-full border border-white/25 px-6 text-sm font-semibold text-white/90">
+              Skip
+            </span>
+            <p className="mt-3 text-xs text-white/55">Tap anywhere to start now</p>
           </div>
         </div>
       ) : null}
@@ -5072,14 +5264,14 @@ export function FitnessApp() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
-                  onClick={() => {
-                    const base =
-                      selectedWeight ??
-                      (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
-                    const next = Math.max(0, Math.round(base - 1))
-                    selectWeight(next)
+                  className="h-14 w-14 touch-manipulation select-none rounded-2xl text-2xl font-bold"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    startHoldRepeat(() => adjustWeight(-1))
                   }}
+                  onPointerUp={stopHoldRepeat}
+                  onPointerLeave={stopHoldRepeat}
+                  onPointerCancel={stopHoldRepeat}
                   aria-label="Decrease weight"
                 >
                   −
@@ -5092,12 +5284,28 @@ export function FitnessApp() {
                       const base =
                         selectedWeight ??
                         (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
-                      setCustomWeight(String(Math.max(0, Math.round(base))))
+                      const next = String(Math.max(0, Math.round(base)))
+                      customWeightRef.current = next
+                      selectedWeightRef.current = null
+                      setCustomWeight(next)
                       setSelectedWeight(null)
                       setShowCustomWeight(true)
                     }}
                     role="button"
                     tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return
+                      e.preventDefault()
+                      const base =
+                        selectedWeight ??
+                        (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
+                      const next = String(Math.max(0, Math.round(base)))
+                      customWeightRef.current = next
+                      selectedWeightRef.current = null
+                      setCustomWeight(next)
+                      setSelectedWeight(null)
+                      setShowCustomWeight(true)
+                    }}
                     aria-label="Enter custom weight"
                   >
                     <div className="text-4xl font-bold tabular-nums text-foreground leading-none">
@@ -5132,14 +5340,14 @@ export function FitnessApp() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
-                  onClick={() => {
-                    const base =
-                      selectedWeight ??
-                      (Number.isFinite(parseFloat(customWeight)) ? parseFloat(customWeight) : 0)
-                    const next = Math.max(0, Math.round(base + 1))
-                    selectWeight(next)
+                  className="h-14 w-14 touch-manipulation select-none rounded-2xl text-2xl font-bold"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    startHoldRepeat(() => adjustWeight(1))
                   }}
+                  onPointerUp={stopHoldRepeat}
+                  onPointerLeave={stopHoldRepeat}
+                  onPointerCancel={stopHoldRepeat}
                   aria-label="Increase weight"
                 >
                   +
@@ -5151,83 +5359,73 @@ export function FitnessApp() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
-                  onClick={() => {
-                    const n = parseInt(reps, 10)
-                    const cur = Number.isFinite(n) ? n : 8
-                    const next = Math.max(1, cur - 1)
-                    setReps(String(next))
+                  className="h-14 w-14 touch-manipulation select-none rounded-2xl text-2xl font-bold"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    startHoldRepeat(() => adjustReps(-1))
                   }}
+                  onPointerUp={stopHoldRepeat}
+                  onPointerLeave={stopHoldRepeat}
+                  onPointerCancel={stopHoldRepeat}
                   aria-label="Decrease reps"
                 >
                   −
                 </Button>
-                <div className="px-1 text-center">
-                  <div className="text-4xl font-bold tabular-nums text-foreground leading-none">
-                    {(() => {
-                      const n = parseInt(reps, 10)
-                      const cur = Number.isFinite(n) ? n : 8
-                      const clamped = Math.min(99, Math.max(1, cur))
-                      return clamped
-                    })()}
+                {!showCustomReps ? (
+                  <div
+                    className="px-1 text-center"
+                    onClick={() => setShowCustomReps(true)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return
+                      e.preventDefault()
+                      setShowCustomReps(true)
+                    }}
+                    aria-label="Enter custom reps"
+                  >
+                    <div className="text-4xl font-bold tabular-nums text-foreground leading-none">
+                      {(() => {
+                        const n = parseInt(reps, 10)
+                        const cur = Number.isFinite(n) ? n : 8
+                        return Math.max(1, cur)
+                      })()}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground leading-none">reps</div>
                   </div>
-                  <div className="mt-1 text-sm text-muted-foreground leading-none">reps</div>
-                </div>
+                ) : (
+                  <Input
+                    ref={repsInputRef}
+                    id="reps-custom"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    placeholder="reps"
+                    value={reps}
+                    onChange={(e) => setReps(e.target.value)}
+                    onBlur={() => {
+                      const n = parseInt(reps, 10)
+                      setReps(String(Number.isFinite(n) ? Math.max(1, n) : 1))
+                      setShowCustomReps(false)
+                    }}
+                    className="h-14 flex-1 rounded-2xl text-center text-xl font-bold tabular-nums"
+                  />
+                )}
                 <Button
                   type="button"
                   variant="secondary"
-                  className="h-14 w-14 rounded-2xl text-2xl font-bold"
-                  onClick={() => {
-                    const n = parseInt(reps, 10)
-                    const cur = Number.isFinite(n) ? n : 8
-                    const next = Math.min(99, cur + 1)
-                    setReps(String(next))
+                  className="h-14 w-14 touch-manipulation select-none rounded-2xl text-2xl font-bold"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    startHoldRepeat(() => adjustReps(1))
                   }}
+                  onPointerUp={stopHoldRepeat}
+                  onPointerLeave={stopHoldRepeat}
+                  onPointerCancel={stopHoldRepeat}
                   aria-label="Increase reps"
                 >
                   +
                 </Button>
-              </div>
-
-              <div className="mt-3">
-                {!showCustomReps ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-9 w-full text-xs text-muted-foreground"
-                    onClick={() => setShowCustomReps(true)}
-                  >
-                    Custom
-                  </Button>
-                ) : (
-                  <div>
-                    <div className="flex items-center justify-between gap-2">
-                      <Label htmlFor="reps-custom" className="text-xs text-muted-foreground">
-                        Custom reps
-                      </Label>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="h-8 px-2 text-xs text-muted-foreground"
-                        onClick={() => setShowCustomReps(false)}
-                      >
-                        Done
-                      </Button>
-                    </div>
-                    <Input
-                      ref={repsInputRef}
-                      id="reps-custom"
-                      type="number"
-                      inputMode="numeric"
-                      min={1}
-                      max={99}
-                      placeholder="Reps"
-                      value={reps}
-                      onChange={(e) => setReps(e.target.value)}
-                      className="mt-1 h-11 text-center text-base"
-                    />
-                  </div>
-                )}
               </div>
             </div>
             </div>
